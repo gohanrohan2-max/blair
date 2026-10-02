@@ -1,4 +1,4 @@
---[[ SysHub - Blair v6.9.37 (Spirit Box: check all players' spirit box) ]]
+--[[ SysHub - Blair v6.9.39 (Infinite Stamina: PC & Mobile compatible) ]]
 print("[SysHub] Starting...")
 local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
 print("[SysHub] WindUI loaded")
@@ -796,7 +796,7 @@ if UVPartRemote and UVPartRemote:IsA("RemoteEvent") then
 end
 
 -- ============================================================
--- SPIRIT BOX (v6.9.37 — check all players' spirit box)
+-- SPIRIT BOX
 -- ============================================================
 
 local SPIRITBOX_QUESTION_TEXTS_NORM = {
@@ -1011,12 +1011,11 @@ local function testSpiritString(s)
 end
 
 -- ============================================================
--- Equipped gate (v6.9.37: cek SEMUA PEMAIN)
+-- Equipped gate (cek SEMUA PEMAIN)
 -- ============================================================
 local lastSpiritBoxEquippedTime = 0
 
 local function isSpiritBoxEquippedByAnyone()
-    -- Cek LocalPlayer
     local char = LocalPlayer.Character
     if char then
         for _, v in ipairs(char:GetChildren()) do
@@ -1026,7 +1025,6 @@ local function isSpiritBoxEquippedByAnyone()
             end
         end
     end
-    -- Cek semua pemain lain
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LocalPlayer then
             local c = plr.Character
@@ -1928,17 +1926,35 @@ local function disablePromptWatcher()
     end
 end
 
+-- ============================================================
+-- Infinite Stamina (v6.9.39 — PC & Mobile compatible)
+-- ============================================================
 local StaminaNumberValues, StaminaAttrTargets = {}, {}
 local LastStaminaScan = 0
+local StaminaDebugPrinted = false
 
+-- v6.9.39: nama stamina diperluas (kompatibel berbagai versi Blair)
 local function isStaminaName(name)
     local n = (name or ""):lower()
-    return n:find("stam") or n:find("sprint") or n:find("energybar") or n:find("energy_bar")
+    return n:find("stam")
+        or n:find("sprint")
+        or n:find("energy")
+        or n:find("endurance")
+        or n:find("fatigue")
+        or n:find("exhaust")
+        or n:find("barvalue")
+        or n:find("bar_value")
+        or n:find("barval")
 end
 
 local function scanStaminaAll()
     StaminaNumberValues, StaminaAttrTargets = {}, {}
-    local roots = {LocalPlayer.Character, LocalPlayer:FindFirstChild("Backpack")}
+    -- v6.9.39: scan Character + Backpack + PlayerGui
+    local roots = {
+        LocalPlayer.Character,
+        LocalPlayer:FindFirstChild("Backpack"),
+        LocalPlayer:FindFirstChild("PlayerGui"),
+    }
     for _, root in ipairs(roots) do
         if root then
             for _, v in ipairs(root:GetDescendants()) do
@@ -1948,15 +1964,33 @@ local function scanStaminaAll()
             end
         end
     end
+    -- Attribute targets: Player + Character + Backpack
     local attrTargets = {LocalPlayer}
     if LocalPlayer.Character then
         table.insert(attrTargets, LocalPlayer.Character)
+    end
+    local backpack = LocalPlayer:FindFirstChild("Backpack")
+    if backpack then
+        table.insert(attrTargets, backpack)
     end
     for _, inst in ipairs(attrTargets) do
         for name, val in pairs(inst:GetAttributes()) do
             if type(val) == "number" and isStaminaName(name) then
                 table.insert(StaminaAttrTargets, {inst = inst, name = name, max = val})
             end
+        end
+    end
+    -- v6.9.39: debug print sekali saja (biar user bisa cek via F9)
+    if not StaminaDebugPrinted then
+        StaminaDebugPrinted = true
+        local nvCount = 0
+        for _ in pairs(StaminaNumberValues) do nvCount = nvCount + 1 end
+        print("[SysHub][Stamina] Found " .. nvCount .. " NumberValues, " .. #StaminaAttrTargets .. " attr targets")
+        for nv, v in pairs(StaminaNumberValues) do
+            print("[SysHub][Stamina]   NV: " .. nv:GetFullName() .. " = " .. tostring(v))
+        end
+        for _, t in ipairs(StaminaAttrTargets) do
+            print("[SysHub][Stamina]   Attr: " .. t.inst:GetFullName() .. "." .. t.name .. " = " .. tostring(t.max))
         end
     end
 end
@@ -2017,7 +2051,32 @@ RunService.Heartbeat:Connect(function()
     if not hum then
         return
     end
-    local sprinting = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift)
+
+    -- v6.9.39: Sprint detection multi-platform (PC + Mobile)
+    local sprinting = false
+    -- (a) PC keyboard
+    if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then
+        sprinting = true
+    end
+    -- (b) Mobile: game boost WalkSpeed saat sprint → deteksi dari WalkSpeed > base
+    if not sprinting and originalWalkSpeed and hum.WalkSpeed > originalWalkSpeed + 0.5 then
+        sprinting = true
+    end
+    -- (c) Mobile fallback: touch input aktif di area kanan-bawah layar
+    if not sprinting and UserInputService.TouchEnabled then
+        local ok, touches = pcall(function() return UserInputService:GetTouches() end)
+        if ok and touches then
+            local cam = Workspace.CurrentCamera
+            local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
+            for _, t in ipairs(touches) do
+                if t.Position.X > vp.X * 0.55 and t.Position.Y > vp.Y * 0.55 then
+                    sprinting = true
+                    break
+                end
+            end
+        end
+    end
+
     if sprinting then
         local sprintWS = capturedSprintSpeed or (originalWalkSpeed and originalWalkSpeed * 1.5) or 19
         if customWalkSpeedEnabled and targetWalkSpeed > sprintWS then
@@ -2902,6 +2961,7 @@ SecMove:Toggle({
     Callback = function(s)
         infiniteStaminaEnabled = s
         if s then
+            StaminaDebugPrinted = false
             pcall(scanStaminaAll)
             pcall(forceStamina)
         end
@@ -3032,6 +3092,7 @@ task.spawn(function()
             end
             StaminaNumberValues, StaminaAttrTargets = {}, {}
             LastStaminaScan = 0
+            StaminaDebugPrinted = false
             lastHuntNotify = 0
             statusUpdateFailures = 0
             for tag in pairs(espTrackers) do
@@ -3044,5 +3105,5 @@ task.spawn(function()
 end)
 
 refreshAutoStatusUI(true)
-safeNotify({Title = "SysHub v6.9.37", Content = "Blair Assistant siap!", Duration = 5})
-print("[SysHub v6.9.37] Loaded")
+safeNotify({Title = "SysHub v6.9.39", Content = "Blair Assistant siap!", Duration = 5})
+print("[SysHub v6.9.39] Loaded")
