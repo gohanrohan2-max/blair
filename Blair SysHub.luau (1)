@@ -1,4 +1,4 @@
---[[ SysHub - Blair v6.9.48 (Fix infinite stamina sprint - always refill) ]]
+--[[ SysHub - Blair v6.9.37 (Spirit Box: check all players' spirit box) + Mobile sprint fix ]]
 print("[SysHub] Starting...")
 local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
 print("[SysHub] WindUI loaded")
@@ -89,6 +89,7 @@ local hookedValueObjects = setmetatable({}, {__mode = "k"})
 local debugCounts = setmetatable({}, {__mode = "k"})
 local uvEvidenceFired = false
 local ghostOrbEvidenceFired = false
+local lastHuntNotify = 0
 
 local function safeNotify(opts)
     pcall(function()
@@ -275,6 +276,11 @@ local function notifyHunt(source)
     if not huntNotifyEnabled then
         return
     end
+    local now = tick()
+    if now - lastHuntNotify < 5 then
+        return
+    end
+    lastHuntNotify = now
     safeNotify({Title = "⚠️ GHOST HUNTING!", Content = "Ghost mulai berburu! [" .. tostring(source or "?") .. "]", Duration = 4})
     print("[SysHub] HUNT: " .. tostring(source))
 end
@@ -324,25 +330,27 @@ local function watchHuntingValue(bv, modelName, isSLSVisual)
         return
     end
     watchedHuntingValues[bv] = true
-    local wasHunting = false
-    local function checkHunt()
-        if bv.Value and not wasHunting then
-            wasHunting = true
-            if isSLSVisual then
-                if autoEvidenceDetectActive then
-                    addDetectedEvidence("SLS Anomaly")
-                end
-            else
-                notifyHunt("Hunting=" .. modelName)
+    bv:GetPropertyChangedSignal("Value"):Connect(function()
+        if not bv.Value then
+            return
+        end
+        if isSLSVisual then
+            if autoEvidenceDetectActive then
+                addDetectedEvidence("SLS Anomaly")
             end
-        elseif not bv.Value then
-            wasHunting = false
+        else
+            notifyHunt("Hunting=" .. modelName)
+        end
+    end)
+    if bv.Value then
+        if isSLSVisual then
+            if autoEvidenceDetectActive then
+                addDetectedEvidence("SLS Anomaly")
+            end
+        else
+            notifyHunt("Hunting=" .. modelName)
         end
     end
-    if bv.Value then
-        checkHunt()
-    end
-    bv:GetPropertyChangedSignal("Value"):Connect(checkHunt)
 end
 
 local function inspectHuntModel(model)
@@ -788,7 +796,7 @@ if UVPartRemote and UVPartRemote:IsA("RemoteEvent") then
 end
 
 -- ============================================================
--- SPIRIT BOX
+-- SPIRIT BOX (v6.9.37 — check all players' spirit box)
 -- ============================================================
 
 local SPIRITBOX_QUESTION_TEXTS_NORM = {
@@ -1003,7 +1011,7 @@ local function testSpiritString(s)
 end
 
 -- ============================================================
--- Equipped gate (cek SEMUA PEMAIN)
+-- Equipped gate (v6.9.37: cek SEMUA PEMAIN)
 -- ============================================================
 local lastSpiritBoxEquippedTime = 0
 
@@ -1918,116 +1926,51 @@ local function disablePromptWatcher()
     end
 end
 
--- ============================================================
--- Infinite Stamina (v6.9.48 — ALWAYS refill, sprint-only speed boost)
--- ============================================================
 local StaminaNumberValues, StaminaAttrTargets = {}, {}
 local LastStaminaScan = 0
-local StaminaDebugPrinted = false
 
 local function isStaminaName(name)
     local n = (name or ""):lower()
-    return n:find("stam")
-        or n:find("sprint")
-        or n:find("energy")
-        or n:find("endurance")
-        or n:find("fatigue")
-        or n:find("exhaust")
-        or n:find("barvalue")
-        or n:find("bar_value")
-        or n:find("barval")
+    return n:find("stam") or n:find("sprint") or n:find("energybar") or n:find("energy_bar")
 end
 
 local function scanStaminaAll()
-    local newNVs = {}
-    local roots = {
-        LocalPlayer.Character,
-        LocalPlayer:FindFirstChild("Backpack"),
-        LocalPlayer:FindFirstChild("PlayerGui"),
-    }
+    StaminaNumberValues, StaminaAttrTargets = {}, {}
+    local roots = {LocalPlayer.Character, LocalPlayer:FindFirstChild("Backpack")}
     for _, root in ipairs(roots) do
         if root then
             for _, v in ipairs(root:GetDescendants()) do
                 if v:IsA("NumberValue") and isStaminaName(v.Name) then
-                    newNVs[v] = true
-                    -- JANGAN turunkan max yang sudah tersimpan
-                    if not StaminaNumberValues[v] or v.Value > StaminaNumberValues[v] then
-                        StaminaNumberValues[v] = v.Value
-                    end
+                    StaminaNumberValues[v] = v.Value
                 end
             end
         end
     end
-    -- Hapus entry yang sudah tidak valid
-    for nv in pairs(StaminaNumberValues) do
-        if not nv.Parent then
-            StaminaNumberValues[nv] = nil
-        end
-    end
-    -- Attr targets (pertahankan yang lama)
     local attrTargets = {LocalPlayer}
     if LocalPlayer.Character then
         table.insert(attrTargets, LocalPlayer.Character)
     end
-    local backpack = LocalPlayer:FindFirstChild("Backpack")
-    if backpack then
-        table.insert(attrTargets, backpack)
-    end
     for _, inst in ipairs(attrTargets) do
         for name, val in pairs(inst:GetAttributes()) do
             if type(val) == "number" and isStaminaName(name) then
-                local found = false
-                for _, t in ipairs(StaminaAttrTargets) do
-                    if t.inst == inst and t.name == name then
-                        if val > t.max then t.max = val end
-                        found = true
-                        break
-                    end
-                end
-                if not found then
-                    table.insert(StaminaAttrTargets, {inst = inst, name = name, max = val})
-                end
+                table.insert(StaminaAttrTargets, {inst = inst, name = name, max = val})
             end
-        end
-    end
-    if not StaminaDebugPrinted then
-        StaminaDebugPrinted = true
-        local nvCount = 0
-        for _ in pairs(StaminaNumberValues) do nvCount = nvCount + 1 end
-        print("[SysHub][Stamina] Found " .. nvCount .. " NumberValues, " .. #StaminaAttrTargets .. " attr targets")
-        for nv, v in pairs(StaminaNumberValues) do
-            print("[SysHub][Stamina]   NV: " .. nv:GetFullName() .. " = " .. tostring(v))
-        end
-        for _, t in ipairs(StaminaAttrTargets) do
-            print("[SysHub][Stamina]   Attr: " .. t.inst:GetFullName() .. "." .. t.name .. " = " .. tostring(t.max))
         end
     end
 end
 
 local function forceStamina()
     for nv, maxVal in pairs(StaminaNumberValues) do
-        if nv.Parent then
-            local cur = nv.Value
-            -- Update max kalau ada nilai lebih tinggi (mis. regen)
-            if cur > maxVal then
-                StaminaNumberValues[nv] = cur
-                maxVal = cur
-            end
-            if cur < maxVal then
-                nv.Value = maxVal
-            end
+        if nv.Parent and nv.Value < maxVal then
+            nv.Value = maxVal
         end
     end
     for _, t in ipairs(StaminaAttrTargets) do
         local cur = t.inst:GetAttribute(t.name)
-        if type(cur) == "number" then
-            if cur > t.max then
-                t.max = cur
-            elseif cur < t.max then
-                pcall(function()
-                    t.inst:SetAttribute(t.name, t.max)
-                end)
-            end
+        if type(cur) == "number" and cur < t.max then
+            pcall(function()
+                t.inst:SetAttribute(t.name, t.max)
+            end)
         end
     end
 end
@@ -2050,208 +1993,78 @@ task.spawn(function()
     end
 end)
 
--- Scan lebih cepat (0.5s) supaya nilai stamina baru ketangkap cepat
 task.spawn(function()
     while true do
         if infiniteStaminaEnabled then
             local now = tick()
-            if now - LastStaminaScan > 0.5 then
+            if now - LastStaminaScan > 3 then
                 LastStaminaScan = now
                 pcall(scanStaminaAll)
             end
         end
-        task.wait(0.2)
+        task.wait(0.5)
     end
 end)
 
 -- ============================================================
--- Sprint button "sprintbutton" — auto-find
+-- Sprint detection (PC + Mobile) — v6.9.37 mobile fix
+-- Sumber: keyboard PC, attribute game (kedua platform), fallback mobile
 -- ============================================================
-local MobileSprintButton = nil
-local MobileSprintDebugPrinted = false
+local lastSprintSeenTick = 0
 
-local SPRINT_NAME_HINTS = {"sprintbutton", "sprint", "runbutton", "run_button", "dash", "boost"}
-
-local function nameMatchesSprint(n)
-    if type(n) ~= "string" or #n == 0 then return false end
-    local low = n:lower()
-    for _, hint in ipairs(SPRINT_NAME_HINTS) do
-        if low == hint or low:find(hint, 1, true) then
-            return true
-        end
+local function detectSprintInput()
+    -- 1. PC: keyboard shift
+    if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)
+        or UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then
+        return true
     end
-    return false
-end
-
-local function tryHookCandidate(d)
-    if not d or not d.Name then return end
-    if MobileSprintButton and MobileSprintButton.Parent then return end
-    if not nameMatchesSprint(d.Name) then return end
-    if d.AbsolutePosition == nil or d.AbsoluteSize == nil then return end
-    MobileSprintButton = d
-    if not MobileSprintDebugPrinted then
-        MobileSprintDebugPrinted = true
-        print("[SysHub][Stamina] Sprint button: " .. d:GetFullName())
-        print("[SysHub][Stamina] Button bounds: pos=" .. tostring(d.AbsolutePosition) .. " size=" .. tostring(d.AbsoluteSize))
-    end
-end
-
-local function scanForSprintButtonIn(root)
-    if not root then return end
-    for _, d in ipairs(root:GetDescendants()) do
-        if MobileSprintButton and MobileSprintButton.Parent then
-            return
-        end
-        tryHookCandidate(d)
-    end
-end
-
-local function findMobileSprintButton()
-    if MobileSprintButton and MobileSprintButton.Parent then return end
-    MobileSprintButton = nil
-    local pg = LocalPlayer:FindFirstChild("PlayerGui")
-    if pg then scanForSprintButtonIn(pg) end
-    if MobileSprintButton and MobileSprintButton.Parent then return end
-    pcall(function()
-        local cg = game:GetService("CoreGui")
-        scanForSprintButtonIn(cg)
-    end)
-end
-
-task.spawn(function()
-    while true do
-        task.wait(3)
-        if MobileSprintButton and MobileSprintButton.Parent then
-            -- sudah ketemu
-        else
-            if UserInputService.TouchEnabled then
-                pcall(findMobileSprintButton)
-            end
-        end
-    end
-end)
-
-task.spawn(function()
-    local pg = LocalPlayer:WaitForChild("PlayerGui", 30)
-    if pg then
-        pg.DescendantAdded:Connect(function(d)
-            if MobileSprintButton and MobileSprintButton.Parent then return end
-            task.wait(0.1)
-            tryHookCandidate(d)
-        end)
-    end
-end)
-
-task.spawn(function()
-    pcall(function()
-        local cg = game:GetService("CoreGui")
-        cg.DescendantAdded:Connect(function(d)
-            if MobileSprintButton and MobileSprintButton.Parent then return end
-            task.wait(0.1)
-            tryHookCandidate(d)
-        end)
-    end)
-end)
-
--- ============================================================
--- Sprint state check — HANYA aktif saat tombol sprint ditekan
--- ============================================================
-local function isSprintActive()
-    -- PRIORITY 1: Attribute IsSprinting (game set HANYA saat sprint ditekan)
+    -- 2. Attribute resmi game (di-set saat sprint ditekan, baik PC maupun HP)
     if LocalPlayer:GetAttribute("IsSprinting") == true then
         return true
     end
-
-    -- PRIORITY 2: Keyboard PC
-    if UserInputService.KeyboardEnabled then
-        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)
-            or UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then
+    -- 3. Mobile fallback: kalau baru saja sprint & pemain masih gerak
+    --    → anggap masih holding sprint (game kadang cancel saat stamina 0)
+    if UserInputService.TouchEnabled then
+        local isMoving = LocalPlayer:GetAttribute("IsMoving") == true
+        if isMoving and (tick() - lastSprintSeenTick) < 1.2 then
             return true
         end
     end
-
-    -- PRIORITY 3: Tombol sprint UI di HP
-    if UserInputService.TouchEnabled
-        and MobileSprintButton and MobileSprintButton.Parent then
-        local ok, touches = pcall(function()
-            return UserInputService:GetTouches()
-        end)
-        if ok and touches and #touches > 0 then
-            local bp = MobileSprintButton.AbsolutePosition
-            local bs = MobileSprintButton.AbsoluteSize
-            local pad = 40
-            for _, t in ipairs(touches) do
-                local px, py = t.Position.X, t.Position.Y
-                if px >= bp.X - pad and px <= bp.X + bs.X + pad
-                   and py >= bp.Y - pad and py <= bp.Y + bs.Y + pad then
-                    return true
-                end
-            end
-        end
-    end
-
     return false
 end
 
--- ============================================================
--- Heartbeat (v6.9.48): ALWAYS refill stamina + sprint-only boost
--- ============================================================
-local lastSprintDetectedTick = 0
-
 RunService.Heartbeat:Connect(function()
-    if not infiniteStaminaEnabled and not customWalkSpeedEnabled then
+    if not infiniteStaminaEnabled then
         return
     end
-
-    local char = LocalPlayer.Character
-    if not char then return end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hum then return end
-
-    -- === KUNCI FIX: Refill stamina SETIAP FRAME ===
-    -- Jadi stamina gak pernah sempat kosong → game gak pernah
-    -- memaksa balik ke walking karena stamina habis.
-    if infiniteStaminaEnabled then
-        forceStamina()
+    forceStamina()
+    local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    if not hum then
+        return
     end
-
-    -- Sprint detection (untuk boost kecepatan saja)
-    local sprinting = false
-    if infiniteStaminaEnabled then
-        sprinting = isSprintActive()
-        if sprinting then
-            lastSprintDetectedTick = tick()
+    local sprinting = detectSprintInput()
+    if sprinting then
+        lastSprintSeenTick = tick()
+        -- FIX MOBILE: paksa attribute IsSprinting = true supaya game
+        -- tidak "cancel" sprint saat stamina sempat 0 sebelum kita refill
+        if LocalPlayer:GetAttribute("IsSprinting") ~= true then
+            pcall(function()
+                LocalPlayer:SetAttribute("IsSprinting", true)
+            end)
         end
-    end
-
-    -- WalkSpeed logic
-    if infiniteStaminaEnabled and sprinting then
-        -- Sprint boost — hanya saat sprint ditekan
-        local sprintWS = capturedSprintSpeed or (originalWalkSpeed and originalWalkSpeed * 1.5) or 24
+        local sprintWS = capturedSprintSpeed or (originalWalkSpeed and originalWalkSpeed * 1.5) or 19
         if customWalkSpeedEnabled and targetWalkSpeed > sprintWS then
             sprintWS = targetWalkSpeed
         end
         if hum.WalkSpeed < sprintWS - 0.5 then
             hum.WalkSpeed = sprintWS
         end
-    elseif customWalkSpeedEnabled then
-        -- Custom WalkSpeed ON (independen dari sprint)
-        if hum.WalkSpeed ~= targetWalkSpeed then
-            hum.WalkSpeed = targetWalkSpeed
-        end
-    elseif infiniteStaminaEnabled then
-        -- Sprint dilepas → kembalikan ke normal (grace pendek 0.3s)
-        if tick() - lastSprintDetectedTick > 0.3 then
-            if originalWalkSpeed and hum.WalkSpeed > originalWalkSpeed + 0.5 then
-                hum.WalkSpeed = originalWalkSpeed
-            end
-        end
     end
 end)
 
 task.spawn(function()
     while true do
-        task.wait(0.2)
+        task.wait(0.15)
         local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
         if hum and originalWalkSpeed then
             local ws = hum.WalkSpeed
@@ -2299,6 +2112,31 @@ end
 LocalPlayer.CharacterAdded:Connect(function(c)
     task.wait(0.3)
     attachWalkSpeed(c)
+end)
+
+-- ============================================================
+-- WalkSpeed Continuous Enforcement
+-- ============================================================
+RunService.RenderStepped:Connect(function()
+    if not customWalkSpeedEnabled then
+        return
+    end
+    local char = LocalPlayer.Character
+    if not char then
+        return
+    end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then
+        return
+    end
+    if infiniteStaminaEnabled then
+        if detectSprintInput() then
+            return
+        end
+    end
+    if hum.WalkSpeed ~= targetWalkSpeed then
+        hum.WalkSpeed = targetWalkSpeed
+    end
 end)
 
 local NoclipConn, CachedParts, CacheTick = nil, {}, 0
@@ -3095,18 +2933,8 @@ SecMove:Toggle({
     Callback = function(s)
         infiniteStaminaEnabled = s
         if s then
-            StaminaDebugPrinted = false
             pcall(scanStaminaAll)
             pcall(forceStamina)
-            if UserInputService.TouchEnabled then
-                pcall(findMobileSprintButton)
-            end
-        else
-            local char = LocalPlayer.Character
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            if hum and originalWalkSpeed then
-                hum.WalkSpeed = originalWalkSpeed
-            end
         end
     end;
 })
@@ -3235,9 +3063,7 @@ task.spawn(function()
             end
             StaminaNumberValues, StaminaAttrTargets = {}, {}
             LastStaminaScan = 0
-            StaminaDebugPrinted = false
-            MobileSprintDebugPrinted = false
-            lastSprintDetectedTick = 0
+            lastHuntNotify = 0
             statusUpdateFailures = 0
             for tag in pairs(espTrackers) do
                 clearESP(tag)
@@ -3249,5 +3075,5 @@ task.spawn(function()
 end)
 
 refreshAutoStatusUI(true)
-safeNotify({Title = "SysHub", Content = "Blair Assistant siap!", Duration = 5})
-print("[SysHub v6.9.48] Loaded")
+safeNotify({Title = "SysHub v6.9.37", Content = "Blair Assistant siap!", Duration = 5})
+print("[SysHub v6.9.37] Loaded")
