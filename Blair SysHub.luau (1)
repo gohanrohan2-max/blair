@@ -1,4 +1,4 @@
---[[ SysHub - Blair v6.9.37 (Spirit Box check all) + Sprint Fix v5.1 ]]
+--[[ SysHub - Blair v6.9.37 (Spirit Box check all) + Sprint Fix v5.2 (performance optimized) ]]
 local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
 local Window = WindUI:CreateWindow({
     Title = "SysHub - Blair"; Icon = "rbxassetid://140026247905567";
@@ -1564,7 +1564,7 @@ local function disablePromptWatcher()
 end
 
 -- ============================================================
--- INFINITE STAMINA + SPRINT BOOST v5.1
+-- INFINITE STAMINA + SPRINT BOOST v5.2 (performance optimized)
 -- ============================================================
 local StaminaNumberValues, StaminaAttrTargets = {}, {}
 local LastStaminaScan = 0
@@ -1742,7 +1742,7 @@ end
 task.spawn(function()
     if UserInputService.TouchEnabled then pcall(findMobileSprintButton) end
     while true do
-        task.wait(3)
+        task.wait(5)
         if UserInputService.TouchEnabled and not (MobileSprintButton and MobileSprintButton.Parent) then
             pcall(findMobileSprintButton)
         end
@@ -1771,24 +1771,27 @@ task.spawn(function()
     end)
 end)
 
+local cachedTouchCheck = false
+local cachedTouchTick = 0
+
 local function isSprintInput()
     if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then return true end
     if UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then return true end
-    if UserInputService.TouchEnabled and mobileSprintButtonHeld then return true end
-    if UserInputService.TouchEnabled and MobileSprintButton and MobileSprintButton.Parent then
-        local ok, touches = pcall(function() return UserInputService:GetTouches() end)
-        if ok and touches and #touches > 0 then
-            local bp = MobileSprintButton.AbsolutePosition
-            local bs = MobileSprintButton.AbsoluteSize
-            local pad = 40
-            for _, t in ipairs(touches) do
-                local px, py = t.Position.X, t.Position.Y
-                if px >= bp.X - pad and px <= bp.X + bs.X + pad
-                   and py >= bp.Y - pad and py <= bp.Y + bs.Y + pad then
-                    return true
-                end
-            end
+
+    if UserInputService.TouchEnabled then
+        if mobileSprintButtonHeld then return true end
+
+        if MobileSprintButton and MobileSprintButton.Parent then
+            return false
         end
+
+        local now = tick()
+        if now - cachedTouchTick > 0.1 then
+            cachedTouchTick = now
+            local ok, touches = pcall(function() return UserInputService:GetTouches() end)
+            cachedTouchCheck = (ok and touches and #touches > 0) or false
+        end
+        return cachedTouchCheck
     end
     return false
 end
@@ -1825,6 +1828,7 @@ RunService.Heartbeat:Connect(function()
 end)
 
 local SprintReactiveConn = nil
+local lastReactiveProcessed = 0
 local function attachSprintReactive(char)
     if SprintReactiveConn then SprintReactiveConn:Disconnect() end
     SprintReactiveConn = nil
@@ -1832,11 +1836,14 @@ local function attachSprintReactive(char)
     if not hum then return end
     SprintReactiveConn = hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
         if not infiniteStaminaEnabled then return end
-        if not isSprintInput() then return end
         local target = getSprintTarget()
-        if hum.WalkSpeed < target then
-            hum.WalkSpeed = target
-        elseif hum.WalkSpeed > target + 0.5 then
+        local ws = hum.WalkSpeed
+        if ws >= target - 0.5 then return end
+        local now = tick()
+        if now - lastReactiveProcessed < 0.033 then return end
+        lastReactiveProcessed = now
+        if not isSprintInput() then return end
+        if ws < target then
             hum.WalkSpeed = target
         end
     end)
@@ -1844,7 +1851,7 @@ end
 
 task.spawn(function()
     while true do
-        task.wait(0.2)
+        task.wait(0.5)
         local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
         if hum and originalWalkSpeed then
             local ws = hum.WalkSpeed
@@ -2607,5 +2614,5 @@ task.spawn(function()
 end)
 
 refreshAutoStatusUI(true)
-safeNotify({Title = "SysHub v6.9.37", Content = "Blair Assistant siap!", Duration = 5})
-print("[SysHub] Loaded")
+safeNotify({Title = "SysHub", Content = "Blair Assistant siap!", Duration = 5})
+print("[SysHub v6.9.37] Loaded")
