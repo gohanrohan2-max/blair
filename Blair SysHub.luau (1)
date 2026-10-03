@@ -1,14 +1,11 @@
---[[ SysHub - Blair v6.9.37 (Spirit Box check all) + Sprint Fix v4 ]]
-print("[SysHub] Starting...")
+--[[ SysHub - Blair v6.9.37 (Spirit Box check all) + Sprint Fix v5.1 ]]
 local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
-print("[SysHub] WindUI loaded")
 local Window = WindUI:CreateWindow({
     Title = "SysHub - Blair"; Icon = "rbxassetid://140026247905567";
     Author = "Premium"; Folder = "SysHub";
     Size = UDim2.fromOffset(640, 540); MinSize = Vector2.new(550, 420);
     Resizable = true; Theme = "Sky";
 })
-print("[SysHub] Window created")
 pcall(function()
     Window:EditOpenButton({
         Title = "SysHub - Blair"; Icon = "ghost";
@@ -282,7 +279,6 @@ local function notifyHunt(source)
     end
     lastHuntNotify = now
     safeNotify({Title = "⚠️ GHOST HUNTING!", Content = "Ghost mulai berburu! [" .. tostring(source or "?") .. "]", Duration = 4})
-    print("[SysHub] HUNT: " .. tostring(source))
 end
 
 local watchedHuntingValues = setmetatable({}, {__mode = "k"})
@@ -437,7 +433,6 @@ local function detectEvidenceFromString(s)
     return nil
 end
 
--- Ghost Orb
 local function fireGhostOrbEvidence(reason)
     if not autoEvidenceDetectActive then
         return
@@ -446,7 +441,6 @@ local function fireGhostOrbEvidence(reason)
         return
     end
     ghostOrbEvidenceFired = true
-    print("[SysHub] Ghost Orb [" .. tostring(reason or "?") .. "] — firing Ghost Orb evidence")
     addDetectedEvidence("Ghost Orb")
 end
 
@@ -477,7 +471,6 @@ if OnAchievementAwarded and OnAchievementAwarded:IsA("RemoteEvent") then
             fireGhostOrbEvidence("Achievement orb")
         end
     end)
-    print("[SysHub] Hooked AchievementServiceEvents.OnAchievementAwarded")
 end
 
 local ORB_KW = {"ghostorb", "ghost_orb", "ghost orb"}
@@ -501,12 +494,12 @@ local function checkOrbInContainer(root)
     for _, v in ipairs(root:GetDescendants()) do
         if v:IsA("ParticleEmitter") then
             if v.Enabled and (matchesOrbName(v.Name) or (v.Parent and matchesOrbName(v.Parent.Name))) then
-                fireGhostOrbEvidence("ParticleEmitter " .. v:GetFullName():sub(1, 80))
+                fireGhostOrbEvidence("ParticleEmitter")
                 return
             end
         elseif v:IsA("BasePart") then
             if v.Transparency < 1 and matchesOrbName(v.Name) then
-                fireGhostOrbEvidence("BasePart " .. v:GetFullName():sub(1, 80))
+                fireGhostOrbEvidence("BasePart")
                 return
             end
         end
@@ -520,7 +513,6 @@ task.spawn(function()
     end
     local orbs = map:WaitForChild("Orbs", 30)
     if orbs then
-        print("[SysHub] Hooked Map.Orbs for Ghost Orb detection")
         orbs.DescendantAdded:Connect(function(d)
             if not autoEvidenceDetectActive or ghostOrbEvidenceFired then
                 return
@@ -584,7 +576,6 @@ if FreezingObjectiveRemote and FreezingObjectiveRemote:IsA("RemoteEvent") then
     end)
 end
 
--- UV Detection
 local function fireUVEvidence(reason)
     if not autoEvidenceDetectActive then
         return
@@ -593,7 +584,6 @@ local function fireUVEvidence(reason)
         return
     end
     uvEvidenceFired = true
-    print("[SysHub] UV revealed [" .. tostring(reason or "?") .. "] — firing Ultraviolet evidence")
     addDetectedEvidence("Ultraviolet")
 end
 
@@ -660,7 +650,7 @@ local function checkUVInContainer(root)
     for _, d in ipairs(root:GetDescendants()) do
         if matchesUVName(d.Name) and not isInsideToolOrCharacter(d) then
             if instanceVisible(d) then
-                fireUVEvidence("UV-detected: " .. d:GetFullName():sub(1, 80))
+                fireUVEvidence("UV")
                 return
             end
         end
@@ -676,7 +666,7 @@ task.spawn(function()
             if not autoEvidenceDetectActive or uvEvidenceFired then return end
             task.wait(0.05)
             if matchesUVName(d.Name) and instanceVisible(d) then
-                fireUVEvidence("Map.Prints new: " .. d.Name)
+                fireUVEvidence("Map.Prints")
             end
         end)
     end
@@ -746,11 +736,10 @@ end)
 if UVPartRemote and UVPartRemote:IsA("RemoteEvent") then
     UVPartRemote.OnClientEvent:Connect(function(...)
         if not autoEvidenceDetectActive then return end
-        fireUVEvidence("UVPartInteraction remote")
+        fireUVEvidence("UVPartInteraction")
     end)
 end
 
--- SPIRIT BOX
 local SPIRITBOX_QUESTION_TEXTS_NORM = {
     ["where are you"] = true,
     ["are you close"] = true,
@@ -970,10 +959,7 @@ end
 
 local function handleSpiritBoxEvent(sourceName, ...)
     if not autoEvidenceDetectActive then return end
-    if not isSpiritBoxActive() then
-        print("[SysHub][Spirit] Blocked (no Spirit Box equipped anywhere): " .. tostring(sourceName))
-        return
-    end
+    if not isSpiritBoxActive() then return end
     local args = {...}
     local allStrings = {}
     for _, a in ipairs(args) do
@@ -982,7 +968,6 @@ local function handleSpiritBoxEvent(sourceName, ...)
     for _, s in ipairs(allStrings) do
         if isSpiritBoxQuestionText(s) then return end
         if testSpiritString(s) then
-            print("[SysHub] SpiritBox [" .. tostring(sourceName) .. "] -> " .. s)
             addDetectedEvidence("Spirit Box")
             return
         end
@@ -1029,19 +1014,9 @@ end
 
 local function fireSpiritBoxFromSound(s)
     if not autoEvidenceDetectActive then return end
-    if not isSpiritBoxActive() then
-        print("[SysHub][Spirit] Sound blocked (no Spirit Box equipped anywhere): " .. s.Name)
-        return
-    end
-    if not isGhostResponseSound(s) then
-        print("[SysHub][Spirit] Sound skipped (not ghost response): " .. s.Name)
-        return
-    end
-    if isExcludedToolSFX(s.Name) then
-        print("[SysHub][Spirit] Sound excluded (tool SFX name): " .. s.Name)
-        return
-    end
-    print("[SysHub] SpiritBox [Sound:" .. s:GetFullName() .. "] -> FIRING (name='" .. s.Name .. "')")
+    if not isSpiritBoxActive() then return end
+    if not isGhostResponseSound(s) then return end
+    if isExcludedToolSFX(s.Name) then return end
     addDetectedEvidence("Spirit Box")
 end
 
@@ -1134,11 +1109,6 @@ local function hookSpiritBoxButton(btn)
     if not btn or hookedButtons[btn] then return end
     if not btn:IsA("TextButton") and not btn:IsA("ImageButton") then return end
     hookedButtons[btn] = true
-    pcall(function()
-        btn.Activated:Connect(function()
-            print("[SysHub][Spirit] Question clicked: " .. btn:GetFullName())
-        end)
-    end)
 end
 
 task.spawn(function()
@@ -1590,11 +1560,11 @@ local function enablePromptWatcher()
     end)
 end
 local function disablePromptWatcher()
-    if PromptConn then PromptConn:Disconnect() PromptConn = nil end
+    if PromptConn then PromptConn:Disconnect(); PromptConn = nil end
 end
 
 -- ============================================================
--- INFINITE STAMINA + SPRINT BOOST v4
+-- INFINITE STAMINA + SPRINT BOOST v5.1
 -- ============================================================
 local StaminaNumberValues, StaminaAttrTargets = {}, {}
 local LastStaminaScan = 0
@@ -1701,7 +1671,6 @@ task.spawn(function()
     end
 end)
 
--- Sprint button finder (mobile)
 local MobileSprintButton = nil
 local mobileSprintButtonHeld = false
 local SPRINT_NAME_HINTS = {"sprintbutton", "sprint", "runbutton", "run_button", "dash", "boost"}
@@ -1741,7 +1710,6 @@ local function hookMobileButton(btn)
             mobileSprintButtonHeld = false
         end)
     end)
-    print("[SysHub][Stamina] Hooked sprint button: " .. btn:GetFullName())
 end
 
 local function tryHookCandidate(d)
@@ -1751,7 +1719,6 @@ local function tryHookCandidate(d)
     if not (d:IsA("TextButton") or d:IsA("ImageButton") or d:IsA("Frame") or d:IsA("ImageLabel")) then return end
     if d.AbsolutePosition == nil or d.AbsoluteSize == nil then return end
     MobileSprintButton = d
-    print("[SysHub][Stamina] Sprint button: " .. d:GetFullName())
     hookMobileButton(d)
 end
 
@@ -1804,14 +1771,10 @@ task.spawn(function()
     end)
 end)
 
--- Simple sprint detection (PC + Mobile)
 local function isSprintInput()
-    -- PC: keyboard Shift
     if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then return true end
     if UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then return true end
-    -- Mobile: InputBegan/Ended hook state
     if UserInputService.TouchEnabled and mobileSprintButtonHeld then return true end
-    -- Mobile: touch pada sprint button region
     if UserInputService.TouchEnabled and MobileSprintButton and MobileSprintButton.Parent then
         local ok, touches = pcall(function() return UserInputService:GetTouches() end)
         if ok and touches and #touches > 0 then
@@ -1830,15 +1793,20 @@ local function isSprintInput()
     return false
 end
 
--- KUNCI FIX: enforce WalkSpeed hanya saat sprint held. Kalau tidak, jangan sentuh.
 local function getSprintTarget()
     if originalWalkSpeed then
-        return math.max(originalWalkSpeed * 1.5, capturedSprintSpeed or 0, 24)
+        local base = originalWalkSpeed * 1.5
+        if capturedSprintSpeed
+           and capturedSprintSpeed > originalWalkSpeed + 0.5
+           and capturedSprintSpeed < originalWalkSpeed * 2.0
+           and capturedSprintSpeed > base then
+            base = capturedSprintSpeed
+        end
+        return base
     end
-    return 24
+    return 9.75
 end
 
--- Heartbeat enforcement
 RunService.Heartbeat:Connect(function()
     if not infiniteStaminaEnabled then return end
     forceStamina()
@@ -1850,11 +1818,12 @@ RunService.Heartbeat:Connect(function()
         local target = getSprintTarget()
         if hum.WalkSpeed < target then
             hum.WalkSpeed = target
+        elseif hum.WalkSpeed > target + 0.5 then
+            hum.WalkSpeed = target
         end
     end
 end)
 
--- Reactive: setiap game set WalkSpeed turun saat sprint di-hold → balikin
 local SprintReactiveConn = nil
 local function attachSprintReactive(char)
     if SprintReactiveConn then SprintReactiveConn:Disconnect() end
@@ -1867,25 +1836,27 @@ local function attachSprintReactive(char)
         local target = getSprintTarget()
         if hum.WalkSpeed < target then
             hum.WalkSpeed = target
+        elseif hum.WalkSpeed > target + 0.5 then
+            hum.WalkSpeed = target
         end
     end)
 end
 
--- Capture sprint speed observed from game
 task.spawn(function()
     while true do
         task.wait(0.2)
         local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
         if hum and originalWalkSpeed then
             local ws = hum.WalkSpeed
-            if ws > originalWalkSpeed + 2 and ws < 100 and (not capturedSprintSpeed or ws > capturedSprintSpeed) then
+            if ws > originalWalkSpeed + 0.5
+               and ws < originalWalkSpeed * 2.0
+               and (not capturedSprintSpeed or ws > capturedSprintSpeed) then
                 capturedSprintSpeed = ws
             end
         end
     end
 end)
 
--- attachWalkSpeed (untuk track originalWalkSpeed + Custom WalkSpeed)
 local WalkSpeedConn = nil
 local function attachWalkSpeed(char)
     if WalkSpeedConn then WalkSpeedConn:Disconnect() end
@@ -1894,12 +1865,13 @@ local function attachWalkSpeed(char)
     if not hum then return end
     if not originalWalkSpeed then
         originalWalkSpeed = hum.WalkSpeed
-        print("[SysHub][Stamina] Original WalkSpeed: " .. tostring(originalWalkSpeed))
     end
     WalkSpeedConn = hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
         if originalWalkSpeed then
             local ws = hum.WalkSpeed
-            if ws > originalWalkSpeed + 2 and ws < 100 and (not capturedSprintSpeed or ws > capturedSprintSpeed) then
+            if ws > originalWalkSpeed + 0.5
+               and ws < originalWalkSpeed * 2.0
+               and (not capturedSprintSpeed or ws > capturedSprintSpeed) then
                 capturedSprintSpeed = ws
             end
         end
@@ -1918,7 +1890,6 @@ LocalPlayer.CharacterAdded:Connect(function(c)
     attachWalkSpeed(c)
 end)
 
--- Custom WalkSpeed enforcement (independen)
 RunService.RenderStepped:Connect(function()
     if not customWalkSpeedEnabled then return end
     if infiniteStaminaEnabled and isSprintInput() then return end
@@ -1931,13 +1902,12 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
--- NOCLIP
 local NoclipConn, CachedParts, CacheTick = nil, {}, 0
 local OrigCollide = setmetatable({}, {__mode = "k"})
 
 local function refreshNoclipCache()
     local char = LocalPlayer.Character
-    if not char then CachedParts = {} return end
+    if not char then CachedParts = {}; return end
     local list = {}
     for _, p in ipairs(char:GetDescendants()) do
         if p:IsA("BasePart") then
@@ -2402,7 +2372,7 @@ local function setFullBright(s)
             end)
         end
     else
-        if LightingConn then LightingConn:Disconnect() LightingConn = nil end
+        if LightingConn then LightingConn:Disconnect(); LightingConn = nil end
         Lighting.Brightness = origLight.Brightness
         Lighting.ClockTime = origLight.ClockTime
         Lighting.FogEnd = origLight.FogEnd
@@ -2518,7 +2488,6 @@ SecMove:Toggle({
             pcall(forceStamina)
             if UserInputService.TouchEnabled then pcall(findMobileSprintButton) end
         end
-        -- Tidak reset apapun saat OFF. Game handles sprint normally.
     end;
 })
 SecMove:Toggle({
@@ -2639,4 +2608,4 @@ end)
 
 refreshAutoStatusUI(true)
 safeNotify({Title = "SysHub v6.9.37", Content = "Blair Assistant siap!", Duration = 5})
-print("[SysHub v6.9.37] Loaded (Sprint Fix v4)")
+print("[SysHub] Loaded")
