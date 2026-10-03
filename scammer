@@ -1,0 +1,2547 @@
+--[[
+    ==============================================================================
+               SYSSCANNER, REMOTESPY & DATA INSPECTOR v3.0
+    ==============================================================================
+    Deskripsi : Toolkit lengkap untuk eksplorasi dan analisis game Roblox:
+                1. 🔍 REMOTE SCANNER : Memindai semua RemoteEvent, RemoteFunction,
+                   UnreliableRemoteEvent, BindableEvent, BindableFunction.
+                2. 🕵️ REMOTESPY : Merekam panggilan FireServer/InvokeServer
+                   secara real-time beserta isinya dan membuat kode Luau siap pakai.
+                3. 📊 GAME DATA INSPECTOR : Membaca seluruh data penting:
+                   - Player Data (leaderstats, Attributes, Inventory, Character stats)
+                   - ReplicatedStorage (ModuleScript databases, Values, Configs)
+                   - Workspace (Model values, Attributes, Spawns, Chests, Shop prices)
+    Fitur Tambahan:
+      - Search instan untuk remote maupun data game
+      - Copy Path Lua, Copy Value, Copy Table, Copy Script FireServer
+      - Export ke Clipboard (`setclipboard`) dan File (`writefile`)
+      - Shortcut keyboard: 'RightShift' untuk Hide/Show UI
+    ==============================================================================
+--]]
+
+local Players = game:GetService("Players")
+local CoreGui = game:GetService("CoreGui")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+
+local LocalPlayer = Players.LocalPlayer
+
+-- Environment helpers (mencegah warning Unknown Global dari Luau analyzer)
+local rawEnv = (type(getfenv) == "function" and getfenv()) or _G
+local getgenv = rawEnv.getgenv
+local gethui = rawEnv.gethui
+local setclipboard = rawEnv.setclipboard or rawEnv.toclipboard
+local writefile = rawEnv.writefile
+local syn = rawEnv.syn
+local hookmetamethod = rawEnv.hookmetamethod
+local getnamecallmethod = rawEnv.getnamecallmethod
+local checkcaller = rawEnv.checkcaller or function() return false end
+local getrawmetatable = rawEnv.getrawmetatable
+local setreadonly = rawEnv.setreadonly
+local newcclosure = rawEnv.newcclosure or function(f) return f end
+local hookfunction = rawEnv.hookfunction
+
+-- Global state table
+local SysScanner = {
+    Version = "3.0.0",
+    Remotes = {},          -- Daftar semua remote
+    SpyLogs = {},          -- Log panggilan RemoteSpy
+    GameData = {},         -- Data yang dipindai (Player, ReplicatedStorage, Workspace)
+    IsWatching = false,    -- Status live watcher remote
+    IsSpying = false,      -- Status remote spy
+    FilterSpam = true,     -- Abaikan panggilan audio/ping bawaan Roblox
+    Connections = {},      -- Event connections
+    GuiInstance = nil,     -- Referensi ScreenGui
+    OnSpyLog = nil         -- Callback UI saat ada log baru
+}
+
+if getgenv then
+    getgenv().SysScanner = SysScanner
+else
+    _G.SysScanner = SysScanner
+end
+
+-- ==============================================================================
+-- [1] SERIALIZER & LUA PATH UTILITIES
+-- ==============================================================================
+
+local function safeGetParentGui()
+    local targetParent = nil
+    if gethui then
+        local ok, h = pcall(gethui)
+        if ok and h then targetParent = h end
+    end
+    if not targetParent then
+        local ok, cg = pcall(function() return CoreGui end)
+        if ok and cg and not RunService:IsStudio() then
+            targetParent = cg
+        end
+    end
+    if not targetParent and LocalPlayer then
+        local ok, pg = pcall(function() return LocalPlayer:WaitForChild("PlayerGui", 5) end)
+        if ok and pg then targetParent = pg end
+    end
+    return targetParent or game:GetService("StarterGui")
+end
+
+local function copyToClipboard(text)
+    local copied = false
+    if setclipboard then
+        pcall(setclipboard, text)
+        copied = true
+    elseif syn and typeof(syn) == "table" and syn.write_clipboard then
+        pcall(syn.write_clipboard, text)
+        copied = true
+    end
+    return copied
+end
+
+local function saveToFile(filename, content)
+    local saved = false
+    if writefile then
+        local ok = pcall(writefile, filename, content)
+        saved = ok
+    end
+    return saved
+end
+
+-- Menghasilkan path Lua yang rapi dengan dot-notation jika nama valid
+local function generateLuaPath(instance)
+    if not instance or not instance.Parent then return "nil" end
+    
+    local pathParts = {}
+    local current = instance
+    local rootService = nil
+    
+    while current and current ~= game do
+        if current.Parent == game then
+            rootService = current.ClassName
+            break
+        else
+            table.insert(pathParts, 1, current.Name)
+            current = current.Parent
+        end
+    end
+    
+    if rootService then
+        local pathStr = 'game:GetService("' .. rootService .. '")'
+        for _, part in ipairs(pathParts) do
+            if part:match("^[%a_][%w_]*$") and not part:match("^%d") then
+                pathStr = pathStr .. "." .. part
+            else
+                pathStr = pathStr .. '["' .. part:gsub('"', '\\"') .. '"]'
+            end
+        end
+        return pathStr
+    end
+    
+    return instance:GetFullName()
+end
+
+-- Serializer nilai ke representasi string Luau yang valid
+local function toLuaString(v, depth)
+    depth = depth or 0
+    local t = typeof(v)
+    local indentStr = string.rep("    ", depth)
+    local nextIndentStr = string.rep("    ", depth + 1)
+    
+    if t == "string" then
+        return string.format("%q", v)
+    elseif t == "number" or t == "boolean" then
+        return tostring(v)
+    elseif v == nil then
+        return "nil"
+    elseif t == "Instance" then
+        return generateLuaPath(v)
+    elseif t == "Vector3" then
+        return string.format("Vector3.new(%s, %s, %s)", tostring(v.X), tostring(v.Y), tostring(v.Z))
+    elseif t == "Vector2" then
+        return string.format("Vector2.new(%s, %s)", tostring(v.X), tostring(v.Y))
+    elseif t == "CFrame" then
+        return string.format("CFrame.new(%s)", tostring(v))
+    elseif t == "Color3" then
+        return string.format("Color3.fromRGB(%d, %d, %d)", math.floor(v.R * 255), math.floor(v.G * 255), math.floor(v.B * 255))
+    elseif t == "UDim2" then
+        return string.format("UDim2.new(%s, %s, %s, %s)", tostring(v.X.Scale), tostring(v.X.Offset), tostring(v.Y.Scale), tostring(v.Y.Offset))
+    elseif t == "UDim" then
+        return string.format("UDim.new(%s, %s)", tostring(v.Scale), tostring(v.Offset))
+    elseif t == "BrickColor" then
+        return string.format("BrickColor.new(%q)", v.Name)
+    elseif t == "EnumItem" then
+        return tostring(v)
+    elseif t == "table" then
+        if depth > 4 then return "{ ... }" end
+        
+        local parts = {}
+        local isArray = true
+        local count = 0
+        for k, _ in pairs(v) do
+            count = count + 1
+            if type(k) ~= "number" or k ~= count then
+                isArray = false
+            end
+        end
+        
+        if count == 0 then return "{}" end
+        
+        if isArray then
+            for _, val in ipairs(v) do
+                table.insert(parts, nextIndentStr .. toLuaString(val, depth + 1))
+            end
+        else
+            for key, val in pairs(v) do
+                local keyStr
+                if type(key) == "string" and key:match("^[%a_][%w_]*$") then
+                    keyStr = key
+                else
+                    keyStr = "[" .. toLuaString(key, depth + 1) .. "]"
+                end
+                table.insert(parts, nextIndentStr .. keyStr .. " = " .. toLuaString(val, depth + 1))
+            end
+        end
+        return "{\n" .. table.concat(parts, ",\n") .. "\n" .. indentStr .. "}"
+    else
+        return tostring(v)
+    end
+end
+
+-- Menghasilkan potongan kode Luau lengkap seperti permintaan user
+local function generateCallCode(remoteInst, method, args)
+    local isFunc = remoteInst and remoteInst:IsA("RemoteFunction")
+    local varName = isFunc and "Function" or "Event"
+    local pathCode = generateLuaPath(remoteInst)
+    
+    local argStrings = {}
+    for _, arg in ipairs(args or {}) do
+        local formatted = toLuaString(arg, 1)
+        table.insert(argStrings, "    " .. formatted:gsub("\n", "\n    "))
+    end
+    
+    local argBody = ""
+    if #argStrings > 0 then
+        argBody = "\n" .. table.concat(argStrings, ",\n") .. "\n"
+    end
+    
+    if isFunc then
+        return string.format(
+            'local %s = %s\nlocal Response = %s:%s(%s)',
+            varName, pathCode, varName, method, argBody
+        )
+    else
+        return string.format(
+            'local %s = %s\n%s:%s(%s)',
+            varName, pathCode, varName, method, argBody
+        )
+    end
+end
+
+SysScanner.GenerateCode = generateCallCode
+SysScanner.ToLuaString = toLuaString
+SysScanner.GetPath = generateLuaPath
+
+-- ==============================================================================
+-- [2] REMOTE SCANNER ENGINE
+-- ==============================================================================
+
+local TARGET_CLASSES = {
+    ["RemoteEvent"] = true,
+    ["RemoteFunction"] = true,
+    ["UnreliableRemoteEvent"] = true,
+    ["BindableEvent"] = true,
+    ["BindableFunction"] = true
+}
+
+local SERVICES_TO_SCAN = {
+    "ReplicatedStorage",
+    "Workspace",
+    "Players",
+    "Lighting",
+    "ReplicatedFirst",
+    "StarterGui",
+    "StarterPack",
+    "SoundService",
+    "MaterialService",
+    "Teams",
+    "TextChatService"
+}
+
+function SysScanner.IsRemote(instance)
+    if not instance or typeof(instance) ~= "Instance" then return false end
+    return TARGET_CLASSES[instance.ClassName] == true
+end
+
+function SysScanner.FormatRemoteData(instance)
+    local successPath, fullName = pcall(function() return instance:GetFullName() end)
+    local luaPath = generateLuaPath(instance)
+    
+    return {
+        Instance = instance,
+        Name = instance.Name,
+        ClassName = instance.ClassName,
+        FullName = successPath and fullName or instance.Name,
+        LuaPath = luaPath,
+        Parent = instance.Parent and instance.Parent.Name or "Unknown",
+        FoundAt = os.date("%X")
+    }
+end
+
+function SysScanner.Scan(onFoundCallback)
+    local startTime = os.clock()
+    local scannedCount = 0
+    local remotesList = {}
+    local seen = {}
+
+    local function checkAndAdd(inst)
+        if not inst or seen[inst] then return end
+        seen[inst] = true
+        
+        if SysScanner.IsRemote(inst) then
+            local data = SysScanner.FormatRemoteData(inst)
+            table.insert(remotesList, data)
+            scannedCount = scannedCount + 1
+            if onFoundCallback then
+                pcall(onFoundCallback, data)
+            end
+        end
+    end
+
+    for _, serviceName in ipairs(SERVICES_TO_SCAN) do
+        local ok, srv = pcall(function() return game:GetService(serviceName) end)
+        if ok and srv then
+            local successDescendants, descendants = pcall(function() return srv:GetDescendants() end)
+            if successDescendants and descendants then
+                for _, inst in ipairs(descendants) do
+                    checkAndAdd(inst)
+                end
+            end
+        end
+    end
+
+    local successGameChildren, gameChildren = pcall(function() return game:GetChildren() end)
+    if successGameChildren and gameChildren then
+        for _, child in ipairs(gameChildren) do
+            local okDesc, descendants = pcall(function() return child:GetDescendants() end)
+            if okDesc and descendants then
+                for _, inst in ipairs(descendants) do
+                    checkAndAdd(inst)
+                end
+            end
+        end
+    end
+
+    table.sort(remotesList, function(a, b)
+        if a.ClassName == b.ClassName then
+            return a.Name:lower() < b.Name:lower()
+        end
+        return a.ClassName < b.ClassName
+    end)
+
+    SysScanner.Remotes = remotesList
+    local elapsedTime = math.floor((os.clock() - startTime) * 1000) / 1000
+
+    print(string.format("[SysScanner] Pemindaian remote selesai dalam %.3f detik. Ditemukan: %d remote.", elapsedTime, #remotesList))
+    return remotesList, elapsedTime
+end
+
+function SysScanner.StartWatcher(onNewRemoteCallback)
+    if SysScanner.IsWatching then return end
+    SysScanner.IsWatching = true
+
+    local function hookContainer(container)
+        if not container then return end
+        local ok, conn = pcall(function()
+            return container.DescendantAdded:Connect(function(descendant)
+                task.wait(0.05)
+                if SysScanner.IsRemote(descendant) then
+                    local data = SysScanner.FormatRemoteData(descendant)
+                    table.insert(SysScanner.Remotes, data)
+                    print(string.format("[SysScanner Live] Remote Baru: %s (%s)", data.Name, data.ClassName))
+                    if onNewRemoteCallback then
+                        pcall(onNewRemoteCallback, data)
+                    end
+                end
+            end)
+        end)
+        if ok and conn then
+            table.insert(SysScanner.Connections, conn)
+        end
+    end
+
+    for _, srvName in ipairs(SERVICES_TO_SCAN) do
+        local ok, srv = pcall(function() return game:GetService(srvName) end)
+        if ok and srv then hookContainer(srv) end
+    end
+
+    print("[SysScanner] Live Watcher diaktifkan.")
+end
+
+function SysScanner.StopWatcher()
+    for _, conn in ipairs(SysScanner.Connections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    SysScanner.Connections = {}
+    SysScanner.IsWatching = false
+    print("[SysScanner] Live Watcher dimatikan.")
+end
+
+-- ==============================================================================
+-- [3] REMOTESPY ENGINE (Dual Hooking: __namecall + hookfunction)
+-- ==============================================================================
+
+local SPAM_REMOTES = {
+    ["CharacterSoundEvent"] = true
+}
+
+local MAX_SPY_LOGS = 150
+local rawOldNamecall = nil
+local isLoggingCall = false
+local recentCalls = {}
+
+local function handleInterceptedCall(self, method, args)
+    if not self or isLoggingCall then return end
+    isLoggingCall = true
+
+    local okRem, isRem = pcall(function() return SysScanner.IsRemote(self) end)
+    if not okRem or not isRem then
+        isLoggingCall = false
+        return
+    end
+
+    if SysScanner.FilterSpam and SPAM_REMOTES[self.Name] then
+        isLoggingCall = false
+        return
+    end
+
+    -- Debounce jika tertangkap bersamaan oleh namecall dan hookfunction
+    local now = os.clock()
+    if recentCalls[self] and (now - recentCalls[self]) < 0.015 then
+        isLoggingCall = false
+        return
+    end
+    recentCalls[self] = now
+
+    local timestamp = os.date("%X")
+    local generatedCode = generateCallCode(self, method, args)
+
+    local previewList = {}
+    for i = 1, math.min(#args, 3) do
+        local s = toLuaString(args[i], 0)
+        if #s > 25 then s = s:sub(1, 22) .. "..." end
+        table.insert(previewList, s)
+    end
+    if #args > 3 then table.insert(previewList, "...") end
+    local argPreview = "(" .. table.concat(previewList, ", ") .. ")"
+
+    local logItem = {
+        Id = #SysScanner.SpyLogs + 1,
+        Instance = self,
+        Name = self.Name,
+        ClassName = self.ClassName,
+        Method = method,
+        Args = args,
+        ArgPreview = argPreview,
+        Time = timestamp,
+        Code = generatedCode,
+        Path = generateLuaPath(self)
+    }
+
+    table.insert(SysScanner.SpyLogs, 1, logItem)
+    if #SysScanner.SpyLogs > MAX_SPY_LOGS then
+        table.remove(SysScanner.SpyLogs)
+    end
+
+    print(string.format("[SysScanner Spy] [%s] %s:%s%s", timestamp, self.Name, method, argPreview))
+
+    if SysScanner.OnSpyLog then
+        pcall(SysScanner.OnSpyLog, logItem)
+    end
+
+    isLoggingCall = false
+end
+
+function SysScanner.StartSpy()
+    if SysScanner.IsSpying then return true end
+
+    -- 1. Hook __namecall (Mencegat Remote:FireServer(...) dan :InvokeServer(...))
+    if hookmetamethod then
+        local oldNamecall = nil
+        local okHook, err = pcall(function()
+            oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+                local method = getnamecallmethod and getnamecallmethod() or ""
+                local lMethod = method:lower()
+                if lMethod == "fireserver" or lMethod == "invokeserver" or lMethod == "fire" or lMethod == "invoke" then
+                    local args = { ... }
+                    task.spawn(handleInterceptedCall, self, method, args)
+                end
+                return oldNamecall(self, ...)
+            end))
+            rawOldNamecall = oldNamecall
+        end)
+        if okHook and rawOldNamecall then
+            SysScanner.IsSpying = true
+            print("[SysScanner Spy] RemoteSpy aktif! (__namecall berhasil terpasang).")
+            return true
+        end
+    end
+
+    -- Fallback via getrawmetatable jika hookmetamethod tidak tersedia
+    if not SysScanner.IsSpying and getrawmetatable and setreadonly then
+        local okGm, err = pcall(function()
+            local gm = getrawmetatable(game)
+            setreadonly(gm, false)
+            local orig = gm.__namecall
+            gm.__namecall = newcclosure(function(self, ...)
+                local method = getnamecallmethod and getnamecallmethod() or ""
+                local lMethod = method:lower()
+                if lMethod == "fireserver" or lMethod == "invokeserver" or lMethod == "fire" or lMethod == "invoke" then
+                    local args = { ... }
+                    task.spawn(handleInterceptedCall, self, method, args)
+                end
+                return orig(self, ...)
+            end)
+            rawOldNamecall = orig
+            setreadonly(gm, true)
+        end)
+        if okGm and rawOldNamecall then
+            SysScanner.IsSpying = true
+            print("[SysScanner Spy] RemoteSpy aktif! (getrawmetatable berhasil terpasang).")
+            return true
+        end
+    end
+
+    if not SysScanner.IsSpying then
+        warn("[SysScanner Spy] Executor tidak mendukung hookmetamethod / getrawmetatable.")
+        return false
+    end
+    return true
+end
+
+function SysScanner.StopSpy()
+    SysScanner.IsSpying = false
+    print("[SysScanner Spy] RemoteSpy dinonaktifkan.")
+end
+
+function SysScanner.ClearSpyLogs()
+    SysScanner.SpyLogs = {}
+    print("[SysScanner Spy] Riwayat log dibersihkan.")
+end
+
+function SysScanner.TestSpy()
+    local testEvt = Instance.new("BindableEvent")
+    testEvt.Name = "SysScanner_TestEvent"
+    testEvt.Parent = game:GetService("ReplicatedStorage")
+    testEvt:Fire("Halo dari SysScanner!", 100, { status = "Berhasil Terdeteksi" })
+    task.delay(0.5, function()
+        pcall(function() testEvt:Destroy() end)
+    end)
+    print("[SysScanner] Test Event telah dipicu! Periksa tab RemoteSpy.")
+end
+
+-- Export functions untuk RemoteSpy (Salin Semua / Simpan File Log)
+function SysScanner.ExportSpyLogsToString(searchKey)
+    local lines = {}
+    local timeStamp = os.date("%Y-%m-%d %H:%M:%S")
+    table.insert(lines, "--[[")
+    table.insert(lines, "    ==========================================================")
+    table.insert(lines, "          SYSSCANNER REMOTESPY - SEMUA PANGGILAN TERREKAM     ")
+    table.insert(lines, "    Tanggal : " .. timeStamp)
+    table.insert(lines, "    Game ID : " .. tostring(game.PlaceId))
+    table.insert(lines, "    Total   : " .. tostring(#SysScanner.SpyLogs) .. " panggilan")
+    table.insert(lines, "    ==========================================================")
+    table.insert(lines, "--]]\n")
+
+    local matched = {}
+    searchKey = searchKey and searchKey:lower() or ""
+    for _, logItem in ipairs(SysScanner.SpyLogs) do
+        if searchKey == "" or logItem.Name:lower():find(searchKey, 1, true) or logItem.ArgPreview:lower():find(searchKey, 1, true) then
+            table.insert(matched, logItem)
+        end
+    end
+
+    if #matched == 0 then
+        table.insert(lines, "-- [Belum ada panggilan remote yang terekam]")
+        return table.concat(lines, "\n")
+    end
+
+    -- Format urutan dari yang paling awal dipanggil sampai yang paling baru
+    for i = #matched, 1, -1 do
+        local item = matched[i]
+        table.insert(lines, string.format("-- [%d] [%s] %s (%s)", (#matched - i + 1), item.Time, item.Name, item.Method))
+        table.insert(lines, item.Code)
+        table.insert(lines, "")
+    end
+
+    return table.concat(lines, "\n")
+end
+
+function SysScanner.ExportSpyLogsToClipboard(searchKey)
+    local content = SysScanner.ExportSpyLogsToString(searchKey)
+    local ok = copyToClipboard(content)
+    if ok then
+        print("[SysScanner] Berhasil menyalin seluruh log RemoteSpy ke clipboard!")
+    else
+        warn("[SysScanner] Executor tidak mendukung setclipboard.")
+    end
+    return ok
+end
+
+function SysScanner.ExportSpyLogsToFile(filename, searchKey)
+    filename = filename or "SysScanner_SpyLogs_" .. tostring(game.PlaceId) .. ".txt"
+    local content = SysScanner.ExportSpyLogsToString(searchKey)
+    local ok = saveToFile(filename, content)
+    if ok then
+        print("[SysScanner] Berhasil menyimpan file log RemoteSpy: " .. filename)
+    else
+        warn("[SysScanner] Gagal menyimpan file log.")
+    end
+    return ok
+end
+
+-- ==============================================================================
+-- [4] GAME DATA INSPECTOR ENGINE (Workspace, Player, ReplicatedStorage)
+-- ==============================================================================
+
+-- Helper untuk require ModuleScript secara aman tanpa resiko thread hang/yield
+local function safeRequire(modInst, timeoutSec)
+    timeoutSec = timeoutSec or 0.04
+    if not modInst or not modInst:IsA("ModuleScript") then return false, nil end
+    
+    local name = modInst.Name:lower()
+    -- Hanya require module yang berbau data/config/tabel statis
+    local isDataLike = name:find("data") or name:find("config") or name:find("database") 
+        or name:find("item") or name:find("drop") or name:find("shop") 
+        or name:find("setting") or name:find("const") or name:find("tier") 
+        or name:find("list") or name:find("info") or name:find("def")
+        or name:find("stat") or name:find("price") or name:find("reward")
+        
+    -- Jangan require controller, service, runtime, UI script, knit, client yang mengeksekusi logika game
+    if not isDataLike then return false, nil end
+    if name:find("controller") or name:find("service") or name:find("runtime") or name:find("knit") or name:find("client") then
+        return false, nil
+    end
+
+    local done = false
+    local success = false
+    local result = nil
+
+    local thread = task.spawn(function()
+        local ok, res = pcall(require, modInst)
+        if not done then
+            done = true
+            success = ok
+            result = res
+        end
+    end)
+
+    -- Tunggu sebentar. Jika module melakukan yield (misal WaitForChild / task.wait), batalkan thread!
+    local startWait = os.clock()
+    while not done and (os.clock() - startWait) < timeoutSec do
+        task.wait(0.01)
+    end
+
+    if not done then
+        done = true
+        pcall(task.cancel, thread)
+        return false, nil
+    end
+
+    return success, result
+end
+
+function SysScanner.ScanGameData(onFoundCallback)
+    local startTime = os.clock()
+    local dataList = {}
+    local seen = {}
+
+    local function addEntry(category, source, name, valType, displayVal, rawVal, path, inst, isModule)
+        local key = tostring(category) .. ":" .. tostring(name) .. ":" .. tostring(path)
+        if seen[key] then return end
+        seen[key] = true
+
+        local entry = {
+            Category = category,
+            Source = source,
+            Name = tostring(name),
+            Type = tostring(valType),
+            Value = tostring(displayVal),
+            RawValue = rawVal,
+            Path = path or "",
+            Instance = inst,
+            IsModule = isModule or false
+        }
+        table.insert(dataList, entry)
+        if onFoundCallback then
+            pcall(onFoundCallback, entry)
+        end
+    end
+
+    -- ==============================================================================
+    -- [1] DEEP SCAN: REPLICATEDSTORAGE (Database, Configs, Items, Values, Attributes)
+    -- ==============================================================================
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
+    local successRep, repDescendants = pcall(function() return ReplicatedStorage:GetDescendants() end)
+    
+    if successRep and repDescendants then
+        local repCount = 0
+        for _, inst in ipairs(repDescendants) do
+            repCount = repCount + 1
+            if repCount % 150 == 0 then task.wait() end
+
+            local parentName = inst.Parent and inst.Parent.Name or "ReplicatedStorage"
+
+            -- A. ValueBase Objects (IntValue, StringValue, NumberValue, BoolValue, ObjectValue, etc.)
+            if inst:IsA("ValueBase") then
+                addEntry("ReplicatedStorage", parentName, inst.Name, inst.ClassName, inst.Value, inst.Value, generateLuaPath(inst), inst)
+
+            -- B. ModuleScripts (Database, Configs, DropRates, Item definitions, Formulas)
+            elseif inst:IsA("ModuleScript") then
+                local okMod, modTable = safeRequire(inst, 0.04)
+                if okMod and type(modTable) == "table" then
+                    local count = 0
+                    local keysSample = {}
+                    for k, _ in pairs(modTable) do
+                        count = count + 1
+                        if #keysSample < 5 then
+                            table.insert(keysSample, tostring(k))
+                        end
+                    end
+                    local summary = string.format("Table (%d entri: %s%s)", count, table.concat(keysSample, ", "), count > 5 and "..." or "")
+                    addEntry("Modules", parentName .. " (Module)", inst.Name, "ModuleScript (Table)", summary, modTable, generateLuaPath(inst), inst, true)
+                else
+                    addEntry("ReplicatedStorage", parentName, inst.Name, "ModuleScript", "ModuleScript Instance", inst, generateLuaPath(inst), inst)
+                end
+
+            -- C. Attributes pada Folder, Configuration, Model, dsb di ReplicatedStorage
+            elseif inst:IsA("Folder") or inst:IsA("Configuration") or inst:IsA("Model") then
+                local attrs = inst:GetAttributes()
+                local attrCount = 0
+                for attrName, attrVal in pairs(attrs) do
+                    attrCount = attrCount + 1
+                    addEntry("ReplicatedStorage", parentName .. " (Attr)", attrName, typeof(attrVal), toLuaString(attrVal, 0), attrVal, generateLuaPath(inst) .. ':GetAttribute("' .. attrName .. '")', inst)
+                end
+                if inst:IsA("Configuration") and attrCount == 0 then
+                    addEntry("ReplicatedStorage", parentName, inst.Name, "Configuration", "Config Folder", inst, generateLuaPath(inst), inst)
+                end
+            end
+        end
+    end
+
+    -- ==============================================================================
+    -- [2] DEEP SCAN: PLAYERSCRIPTS (Controllers, Client Tables, Attributes, Values)
+    -- ==============================================================================
+    if LocalPlayer then
+        local playerScripts = LocalPlayer:FindFirstChild("PlayerScripts")
+        if playerScripts then
+            local successPs, psDescendants = pcall(function() return playerScripts:GetDescendants() end)
+            if successPs and psDescendants then
+                local psCount = 0
+                for _, inst in ipairs(psDescendants) do
+                    psCount = psCount + 1
+                    if psCount % 150 == 0 then task.wait() end
+
+                    local parentName = inst.Parent and inst.Parent.Name or "PlayerScripts"
+
+                    -- A. ValueBase di PlayerScripts
+                    if inst:IsA("ValueBase") then
+                        addEntry("PlayerScripts", parentName, inst.Name, inst.ClassName, inst.Value, inst.Value, generateLuaPath(inst), inst)
+
+                    -- B. ModuleScripts di PlayerScripts (Client Controller state / tables)
+                    elseif inst:IsA("ModuleScript") then
+                        local okMod, modTable = safeRequire(inst, 0.04)
+                        if okMod and type(modTable) == "table" then
+                            local count = 0
+                            for _ in pairs(modTable) do count = count + 1 end
+                            local summary = string.format("Client Table (%d entri)", count)
+                            addEntry("PlayerScripts", parentName .. " (Module)", inst.Name, "ModuleScript (Table)", summary, modTable, generateLuaPath(inst), inst, true)
+                        else
+                            addEntry("PlayerScripts", parentName, inst.Name, "ModuleScript", "Client Controller", inst, generateLuaPath(inst), inst)
+                        end
+
+                    -- C. Attributes di PlayerScripts
+                    elseif inst:IsA("Folder") or inst:IsA("Configuration") or inst:IsA("LocalScript") then
+                        local attrs = inst:GetAttributes()
+                        for attrName, attrVal in pairs(attrs) do
+                            addEntry("PlayerScripts", parentName .. " (Attr)", attrName, typeof(attrVal), toLuaString(attrVal, 0), attrVal, generateLuaPath(inst) .. ':GetAttribute("' .. attrName .. '")', inst)
+                        end
+                    end
+                end
+            end
+        end
+
+        -- ==============================================================================
+        -- [3] PLAYER PROFILE & LIVE REMOTES (Data profil & stats aktif)
+        -- ==============================================================================
+        local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
+        if leaderstats then
+            for _, val in ipairs(leaderstats:GetChildren()) do
+                if val:IsA("ValueBase") then
+                    addEntry("Player", "leaderstats", val.Name, val.ClassName, val.Value, val.Value, generateLuaPath(val), val)
+                end
+            end
+        end
+
+        local playerAttrs = LocalPlayer:GetAttributes()
+        for attrName, attrVal in pairs(playerAttrs) do
+            addEntry("Player", "Player Attribute", attrName, typeof(attrVal), toLuaString(attrVal, 0), attrVal, 'game:GetService("Players").LocalPlayer:GetAttribute("' .. attrName .. '")', LocalPlayer)
+        end
+
+        pcall(function()
+            local remoteFolder = ReplicatedStorage:FindFirstChild("Remote") or ReplicatedStorage:FindFirstChild("remotes") or ReplicatedStorage:FindFirstChild("Remotes")
+            if remoteFolder then
+                local profileFolder = remoteFolder:FindFirstChild("Profile") or remoteFolder:FindFirstChild("profile")
+                if profileFolder then
+                    local getDataRF = profileFolder:FindFirstChild("GetDataRF") or profileFolder:FindFirstChild("GetTotalDataRF")
+                    if getDataRF and getDataRF:IsA("RemoteFunction") then
+                        local ok, pData = pcall(function() return getDataRF:InvokeServer() end)
+                        if ok and type(pData) == "table" then
+                            for k, v in pairs(pData) do
+                                local displayVal = (type(v) == "table") and "{...}" or tostring(v)
+                                addEntry("Player", "Profile Remote (Live)", tostring(k), typeof(v), displayVal, v, generateLuaPath(getDataRF) .. ':InvokeServer()["' .. tostring(k) .. '"]', getDataRF, type(v) == "table")
+                            end
+                        end
+                    end
+                end
+                local bpFolder = remoteFolder:FindFirstChild("Backpack") or remoteFolder:FindFirstChild("backpack")
+                if bpFolder then
+                    local getBpRF = bpFolder:FindFirstChild("GetBackpackInfoRF")
+                    if getBpRF and getBpRF:IsA("RemoteFunction") then
+                        local ok, bpData = pcall(function() return getBpRF:InvokeServer() end)
+                        if ok and type(bpData) == "table" then
+                            for k, v in pairs(bpData) do
+                                local displayVal = (type(v) == "table") and "{...}" or tostring(v)
+                                addEntry("Player", "Backpack Remote (Live)", tostring(k), typeof(v), displayVal, v, generateLuaPath(getBpRF) .. ':InvokeServer()["' .. tostring(k) .. '"]', getBpRF, type(v) == "table")
+                            end
+                        end
+                    end
+                end
+            end
+        end)
+    end
+
+    -- ==============================================================================
+    -- [4] DEEP SCAN: WORKSPACE (Values, Attributes, Configs, Prompts, Interactables)
+    -- ==============================================================================
+    local Workspace = game:GetService("Workspace")
+    local successWs, wsDescendants = pcall(function() return Workspace:GetDescendants() end)
+    if successWs and wsDescendants then
+        local wsCount = 0
+        for _, inst in ipairs(wsDescendants) do
+            -- Filter instan objek 3D fisik / visual berat agar FPS tetap mulus dan anti-freeze
+            local cName = inst.ClassName
+            if cName == "Part" or cName == "MeshPart" or cName == "Decal" or cName == "Texture" or cName == "SpecialMesh" 
+                or cName == "Weld" or cName == "Motor6D" or cName == "Attachment" or cName == "ParticleEmitter" 
+                or cName == "Sound" or cName == "Terrain" or cName == "Beam" or cName == "Trail" 
+                or cName == "Highlight" or cName == "UnionOperation" or cName == "CornerWedgePart" or cName == "WedgePart"
+                or cName == "TrussPart" or cName == "SurfaceGui" or cName == "BillboardGui" then
+                
+                -- Jika part memiliki atribut custom, tetap catat!
+                local pAttrs = inst:GetAttributes()
+                for aName, aVal in pairs(pAttrs) do
+                    addEntry("Workspace", inst.Name .. " (Part Attr)", aName, typeof(aVal), toLuaString(aVal, 0), aVal, generateLuaPath(inst) .. ':GetAttribute("' .. aName .. '")', inst)
+                end
+                continue
+            end
+
+            wsCount = wsCount + 1
+            if wsCount % 150 == 0 then task.wait() end
+
+            local parentName = inst.Parent and inst.Parent.Name or "Workspace"
+
+            -- A. ValueBase di Workspace (IntValue, StringValue, BoolValue, ObjectValue, dll.)
+            if inst:IsA("ValueBase") then
+                addEntry("Workspace", parentName, inst.Name, inst.ClassName, inst.Value, inst.Value, generateLuaPath(inst), inst)
+
+            -- B. Interactive Objects (ProximityPrompt & ClickDetector)
+            elseif inst:IsA("ProximityPrompt") then
+                local promptSummary = string.format("Prompt: %s | Action: %s", tostring(inst.ObjectText), tostring(inst.ActionText))
+                addEntry("Workspace", parentName .. " (Prompt)", inst.Name, "ProximityPrompt", promptSummary, inst, generateLuaPath(inst), inst)
+            elseif inst:IsA("ClickDetector") then
+                addEntry("Workspace", parentName .. " (Click)", inst.Name, "ClickDetector", "MaxDistance: " .. tostring(inst.MaxActivationDistance), inst, generateLuaPath(inst), inst)
+
+            -- C. Models, Folders, Configurations yang memiliki Attributes
+            elseif inst:IsA("Model") or inst:IsA("Folder") or inst:IsA("Configuration") then
+                local attrs = inst:GetAttributes()
+                for attrName, attrVal in pairs(attrs) do
+                    addEntry("Workspace", parentName .. " (" .. inst.Name .. ")", attrName, typeof(attrVal), toLuaString(attrVal, 0), attrVal, generateLuaPath(inst) .. ':GetAttribute("' .. attrName .. '")', inst)
+                end
+                if inst:IsA("Configuration") then
+                    addEntry("Workspace", parentName, inst.Name, "Configuration", "Config Folder", inst, generateLuaPath(inst), inst)
+                end
+            end
+        end
+    end
+
+    table.sort(dataList, function(a, b)
+        if a.Category == b.Category then
+            return a.Name:lower() < b.Name:lower()
+        end
+        return a.Category < b.Category
+    end)
+
+    SysScanner.GameData = dataList
+    local elapsedTime = math.floor((os.clock() - startTime) * 1000) / 1000
+    print(string.format("[SysScanner] Pemindaian data selesai dalam %.3f detik. Ditemukan: %d data entri.", elapsedTime, #dataList))
+    return dataList, elapsedTime
+end
+
+-- ==============================================================================
+-- [5] EXPORT & LOGGING UTILITIES
+-- ==============================================================================
+
+function SysScanner.ExportDataToString(filterCategory)
+    local lines = {}
+    local timeStamp = os.date("%Y-%m-%d %H:%M:%S")
+    table.insert(lines, "==========================================================")
+    table.insert(lines, "               SYSSCANNER - LAPORAN DATA GAME             ")
+    table.insert(lines, " Tanggal : " .. timeStamp)
+    table.insert(lines, " Game ID : " .. tostring(game.PlaceId))
+    table.insert(lines, "==========================================================")
+
+    local filtered = {}
+    for _, d in ipairs(SysScanner.GameData) do
+        if not filterCategory or filterCategory == "All" or d.Category == filterCategory then
+            table.insert(filtered, d)
+        end
+    end
+
+    table.insert(lines, string.format("Total Data Ditemukan: %d entri\n", #filtered))
+    for i, d in ipairs(filtered) do
+        table.insert(lines, string.format("[%d] [%s] %s (%s)", i, d.Category, d.Name, d.Source))
+        table.insert(lines, "    Value: " .. tostring(d.Value))
+        table.insert(lines, "    Path : " .. d.Path)
+        table.insert(lines, "")
+    end
+
+    return table.concat(lines, "\n")
+end
+
+function SysScanner.ExportDataToClipboard(filterCategory)
+    local content = SysScanner.ExportDataToString(filterCategory)
+    local ok = copyToClipboard(content)
+    if ok then
+        print("[SysScanner] Berhasil menyalin data game ke clipboard!")
+    else
+        warn("[SysScanner] Executor tidak mendukung setclipboard.")
+    end
+    return ok
+end
+
+function SysScanner.ExportDataToFile(filename, filterCategory)
+    filename = filename or "SysScanner_GameData_" .. tostring(game.PlaceId) .. ".txt"
+    local content = SysScanner.ExportDataToString(filterCategory)
+    local ok = saveToFile(filename, content)
+    if ok then
+        print("[SysScanner] Berhasil menyimpan data ke file: " .. filename)
+    else
+        warn("[SysScanner] Gagal menyimpan file.")
+    end
+    return ok
+end
+
+-- Export functions untuk Remote Scanner
+function SysScanner.ExportToString(filterClass)
+    local lines = {}
+    local timeStamp = os.date("%Y-%m-%d %H:%M:%S")
+    table.insert(lines, "==========================================================")
+    table.insert(lines, "               SYSSCANNER - DAFTAR REMOTE ROBLOX          ")
+    table.insert(lines, " Tanggal : " .. timeStamp)
+    table.insert(lines, " Game ID : " .. tostring(game.PlaceId))
+    table.insert(lines, "==========================================================")
+
+    local filtered = {}
+    for _, r in ipairs(SysScanner.Remotes) do
+        local passClass = (not filterClass or filterClass == "All" or r.ClassName == filterClass)
+        if filterClass == "Bindable" and (r.ClassName == "BindableEvent" or r.ClassName == "BindableFunction") then
+            passClass = true
+        end
+        if passClass then
+            table.insert(filtered, r)
+        end
+    end
+
+    table.insert(lines, string.format("Total: %d remote\n", #filtered))
+    for i, r in ipairs(filtered) do
+        table.insert(lines, string.format("[%d] %s [%s]", i, r.Name, r.ClassName))
+        table.insert(lines, "    Path: " .. r.LuaPath)
+        table.insert(lines, "    Full: " .. r.FullName)
+        table.insert(lines, "")
+    end
+
+    return table.concat(lines, "\n")
+end
+
+function SysScanner.ExportToClipboard(filterClass)
+    local content = SysScanner.ExportToString(filterClass)
+    local ok = copyToClipboard(content)
+    if ok then
+        print("[SysScanner] Berhasil menyalin daftar remote ke clipboard!")
+    else
+        warn("[SysScanner] Executor tidak mendukung setclipboard.")
+    end
+    return ok
+end
+
+function SysScanner.ExportToFile(filename, filterClass)
+    filename = filename or "SysScanner_Remotes_" .. tostring(game.PlaceId) .. ".txt"
+    local content = SysScanner.ExportToString(filterClass)
+    local ok = saveToFile(filename, content)
+    if ok then
+        print("[SysScanner] Berhasil menyimpan file remote: " .. filename)
+    else
+        warn("[SysScanner] Gagal menyimpan file remote.")
+    end
+    return ok
+end
+
+function SysScanner.PrintAll(filterClass)
+    print(SysScanner.ExportToString(filterClass))
+end
+
+function SysScanner.Search(keyword)
+    if not keyword or keyword == "" then return SysScanner.Remotes end
+    keyword = keyword:lower()
+    local matched = {}
+    for _, r in ipairs(SysScanner.Remotes) do
+        if r.Name:lower():find(keyword, 1, true) or r.FullName:lower():find(keyword, 1, true) then
+            table.insert(matched, r)
+        end
+    end
+    return matched
+end
+
+-- ==============================================================================
+-- [6] MODERN GLASSMORPHIC GUI (SCANNER + REMOTESPY + DATA INSPECTOR)
+-- ==============================================================================
+
+local CLASS_COLORS = {
+    RemoteEvent = Color3.fromRGB(56, 189, 248),
+    RemoteFunction = Color3.fromRGB(168, 85, 247),
+    UnreliableRemoteEvent = Color3.fromRGB(251, 146, 60),
+    BindableEvent = Color3.fromRGB(52, 211, 153),
+    BindableFunction = Color3.fromRGB(244, 114, 182)
+}
+
+local CATEGORY_COLORS = {
+    Player = Color3.fromRGB(52, 211, 153),            -- Emerald
+    PlayerScripts = Color3.fromRGB(244, 114, 182),     -- Pink
+    Features = Color3.fromRGB(245, 158, 11),          -- Amber / Gold
+    Content = Color3.fromRGB(129, 140, 248),          -- Indigo
+    ReplicatedStorage = Color3.fromRGB(56, 189, 248), -- Cyan
+    Workspace = Color3.fromRGB(251, 146, 60),         -- Orange
+    Modules = Color3.fromRGB(168, 85, 247)            -- Purple
+}
+
+function SysScanner.CreateGUI()
+    local parentGui = safeGetParentGui()
+    if parentGui:FindFirstChild("SysScanner_UI") then
+        parentGui.SysScanner_UI:Destroy()
+    end
+
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "SysScanner_UI"
+    ScreenGui.ResetOnSpawn = false
+    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+    -- Main Container Window
+    local MainFrame = Instance.new("Frame")
+    MainFrame.Name = "MainFrame"
+    MainFrame.Size = UDim2.new(0, 640, 0, 530)
+    MainFrame.Position = UDim2.new(0.5, -320, 0.5, -265)
+    MainFrame.BackgroundColor3 = Color3.fromRGB(18, 20, 26)
+    MainFrame.BorderSizePixel = 0
+    MainFrame.Active = true
+    MainFrame.ClipsDescendants = true
+    MainFrame.Parent = ScreenGui
+
+    local UICorner = Instance.new("UICorner")
+    UICorner.CornerRadius = UDim.new(0, 12)
+    UICorner.Parent = MainFrame
+
+    local UIStroke = Instance.new("UIStroke")
+    UIStroke.Color = Color3.fromRGB(45, 52, 70)
+    UIStroke.Thickness = 1.2
+    UIStroke.Parent = MainFrame
+
+    -- Dragging Logic
+    local dragging, dragInput, dragStart, startPos
+    MainFrame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = MainFrame.Position
+
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+
+    MainFrame.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+
+    -- Top Header Bar
+    local Header = Instance.new("Frame")
+    Header.Name = "Header"
+    Header.Size = UDim2.new(1, 0, 0, 46)
+    Header.BackgroundColor3 = Color3.fromRGB(24, 27, 36)
+    Header.BorderSizePixel = 0
+    Header.Parent = MainFrame
+
+    local HeaderCorner = Instance.new("UICorner")
+    HeaderCorner.CornerRadius = UDim.new(0, 12)
+    HeaderCorner.Parent = Header
+
+    local TitleLabel = Instance.new("TextLabel")
+    TitleLabel.Name = "Title"
+    TitleLabel.Size = UDim2.new(0, 300, 1, 0)
+    TitleLabel.Position = UDim2.new(0, 16, 0, 0)
+    TitleLabel.BackgroundTransparency = 1
+    TitleLabel.Text = "⚡ SysScanner & Data Inspector"
+    TitleLabel.TextColor3 = Color3.fromRGB(240, 245, 255)
+    TitleLabel.TextSize = 15
+    TitleLabel.Font = Enum.Font.GothamBold
+    TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    TitleLabel.Parent = Header
+
+    -- Close Button
+    local CloseBtn = Instance.new("TextButton")
+    CloseBtn.Name = "CloseBtn"
+    CloseBtn.Size = UDim2.new(0, 30, 0, 30)
+    CloseBtn.Position = UDim2.new(1, -38, 0.5, -15)
+    CloseBtn.BackgroundColor3 = Color3.fromRGB(36, 41, 54)
+    CloseBtn.Text = "✕"
+    CloseBtn.TextColor3 = Color3.fromRGB(200, 205, 220)
+    CloseBtn.TextSize = 13
+    CloseBtn.Font = Enum.Font.GothamBold
+    CloseBtn.BorderSizePixel = 0
+    CloseBtn.Parent = Header
+
+    local CloseCorner = Instance.new("UICorner")
+    CloseCorner.CornerRadius = UDim.new(0, 6)
+    CloseCorner.Parent = CloseBtn
+
+    CloseBtn.MouseButton1Click:Connect(function()
+        ScreenGui.Enabled = not ScreenGui.Enabled
+    end)
+
+    -- Toast / Status Banner
+    local Toast = Instance.new("TextLabel")
+    Toast.Name = "Toast"
+    Toast.Size = UDim2.new(0, 210, 0, 26)
+    Toast.Position = UDim2.new(1, -260, 0.5, -13)
+    Toast.BackgroundColor3 = Color3.fromRGB(16, 185, 129)
+    Toast.TextColor3 = Color3.fromRGB(255, 255, 255)
+    Toast.TextSize = 12
+    Toast.Font = Enum.Font.GothamBold
+    Toast.Text = "Tersalin!"
+    Toast.BackgroundTransparency = 1
+    Toast.TextTransparency = 1
+    Toast.BorderSizePixel = 0
+    Toast.Parent = Header
+
+    local ToastCorner = Instance.new("UICorner")
+    ToastCorner.CornerRadius = UDim.new(0, 6)
+    ToastCorner.Parent = Toast
+
+    local function showToast(msg, isWarn)
+        Toast.Text = msg
+        Toast.BackgroundColor3 = isWarn and Color3.fromRGB(239, 68, 68) or Color3.fromRGB(16, 185, 129)
+        TweenService:Create(Toast, TweenInfo.new(0.2), {BackgroundTransparency = 0, TextTransparency = 0}):Play()
+        task.delay(1.6, function()
+            TweenService:Create(Toast, TweenInfo.new(0.3), {BackgroundTransparency = 1, TextTransparency = 1}):Play()
+        end)
+    end
+
+    -- ==============================================================================
+    -- MAIN NAVIGATION TABS (3 TABS: Scanner, RemoteSpy, Game Data)
+    -- ==============================================================================
+    local ModeBar = Instance.new("Frame")
+    ModeBar.Name = "ModeBar"
+    ModeBar.Size = UDim2.new(1, -24, 0, 32)
+    ModeBar.Position = UDim2.new(0, 12, 0, 52)
+    ModeBar.BackgroundColor3 = Color3.fromRGB(24, 27, 36)
+    ModeBar.BorderSizePixel = 0
+    ModeBar.Parent = MainFrame
+
+    local ModeBarCorner = Instance.new("UICorner")
+    ModeBarCorner.CornerRadius = UDim.new(0, 8)
+    ModeBarCorner.Parent = ModeBar
+
+    local ModeLayout = Instance.new("UIListLayout")
+    ModeLayout.FillDirection = Enum.FillDirection.Horizontal
+    ModeLayout.Padding = UDim.new(0, 4)
+    ModeLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    ModeLayout.Parent = ModeBar
+
+    local ModePadding = Instance.new("UIPadding")
+    ModePadding.PaddingTop = UDim.new(0, 2)
+    ModePadding.PaddingBottom = UDim.new(0, 2)
+    ModePadding.PaddingLeft = UDim.new(0, 4)
+    ModePadding.PaddingRight = UDim.new(0, 4)
+    ModePadding.Parent = ModeBar
+
+    -- Panels Containers
+    local ScannerPanel = Instance.new("Frame")
+    ScannerPanel.Name = "ScannerPanel"
+    ScannerPanel.Size = UDim2.new(1, 0, 1, -90)
+    ScannerPanel.Position = UDim2.new(0, 0, 0, 90)
+    ScannerPanel.BackgroundTransparency = 1
+    ScannerPanel.Visible = true
+    ScannerPanel.Parent = MainFrame
+
+    local SpyPanel = Instance.new("Frame")
+    SpyPanel.Name = "SpyPanel"
+    SpyPanel.Size = UDim2.new(1, 0, 1, -90)
+    SpyPanel.Position = UDim2.new(0, 0, 0, 90)
+    SpyPanel.BackgroundTransparency = 1
+    SpyPanel.Visible = false
+    SpyPanel.Parent = MainFrame
+
+    local DataPanel = Instance.new("Frame")
+    DataPanel.Name = "DataPanel"
+    DataPanel.Size = UDim2.new(1, 0, 1, -90)
+    DataPanel.Position = UDim2.new(0, 0, 0, 90)
+    DataPanel.BackgroundTransparency = 1
+    DataPanel.Visible = false
+    DataPanel.Parent = MainFrame
+
+    local function createNavButton(name, label, order, panelTarget)
+        local btn = Instance.new("TextButton")
+        btn.Name = name
+        btn.Size = UDim2.new(0.333, -4, 1, 0)
+        btn.BackgroundColor3 = (order == 1) and Color3.fromRGB(37, 99, 235) or Color3.fromRGB(24, 27, 36)
+        btn.Text = label
+        btn.TextColor3 = (order == 1) and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(170, 180, 200)
+        btn.TextSize = 12
+        btn.Font = Enum.Font.GothamBold
+        btn.BorderSizePixel = 0
+        btn.LayoutOrder = order
+        btn.Parent = ModeBar
+
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 6)
+        corner.Parent = btn
+
+        return btn
+    end
+
+    local tabButtons = {}
+    local navScanner = createNavButton("NavScanner", "🔍 Remote Scanner", 1, ScannerPanel)
+    local navSpy = createNavButton("NavSpy", "🕵️ RemoteSpy", 2, SpyPanel)
+    local navData = createNavButton("NavData", "📊 Game Data", 3, DataPanel)
+
+    tabButtons = {
+        { Btn = navScanner, Panel = ScannerPanel },
+        { Btn = navSpy, Panel = SpyPanel },
+        { Btn = navData, Panel = DataPanel }
+    }
+
+    local refreshRemoteDisplay = nil
+    local refreshSpyDisplay = nil
+    local refreshDataDisplay = nil
+
+    local function switchTab(selectedPanel)
+        for _, tab in ipairs(tabButtons) do
+            local isSelected = (tab.Panel == selectedPanel)
+            tab.Panel.Visible = isSelected
+            tab.Btn.BackgroundColor3 = isSelected and Color3.fromRGB(37, 99, 235) or Color3.fromRGB(24, 27, 36)
+            tab.Btn.TextColor3 = isSelected and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(170, 180, 200)
+        end
+
+        if selectedPanel == SpyPanel and refreshSpyDisplay then
+            pcall(refreshSpyDisplay)
+        elseif selectedPanel == DataPanel and refreshDataDisplay then
+            pcall(refreshDataDisplay)
+        elseif selectedPanel == ScannerPanel and refreshRemoteDisplay then
+            pcall(refreshRemoteDisplay)
+        end
+    end
+
+    navScanner.MouseButton1Click:Connect(function() switchTab(ScannerPanel) end)
+    navSpy.MouseButton1Click:Connect(function() switchTab(SpyPanel) end)
+    navData.MouseButton1Click:Connect(function() switchTab(DataPanel) end)
+
+    -- ==============================================================================
+    -- [PANEL 1] REMOTE SCANNER UI
+    -- ==============================================================================
+    local ControlBar = Instance.new("Frame")
+    ControlBar.Name = "ControlBar"
+    ControlBar.Size = UDim2.new(1, -24, 0, 36)
+    ControlBar.Position = UDim2.new(0, 12, 0, 6)
+    ControlBar.BackgroundTransparency = 1
+    ControlBar.Parent = ScannerPanel
+
+    local SearchBox = Instance.new("TextBox")
+    SearchBox.Name = "SearchBox"
+    SearchBox.Size = UDim2.new(0, 280, 1, 0)
+    SearchBox.BackgroundColor3 = Color3.fromRGB(26, 30, 42)
+    SearchBox.TextColor3 = Color3.fromRGB(240, 245, 255)
+    SearchBox.PlaceholderColor3 = Color3.fromRGB(120, 130, 150)
+    SearchBox.PlaceholderText = "🔍 Cari nama remote..."
+    SearchBox.Text = ""
+    SearchBox.TextSize = 12
+    SearchBox.Font = Enum.Font.Gotham
+    SearchBox.TextXAlignment = Enum.TextXAlignment.Left
+    SearchBox.ClearTextOnFocus = false
+    SearchBox.BorderSizePixel = 0
+    SearchBox.Parent = ControlBar
+
+    local SearchPad = Instance.new("UIPadding")
+    SearchPad.PaddingLeft = UDim.new(0, 10)
+    SearchPad.Parent = SearchBox
+
+    local SearchCorner = Instance.new("UICorner")
+    SearchCorner.CornerRadius = UDim.new(0, 6)
+    SearchCorner.Parent = SearchBox
+
+    local ScanBtn = Instance.new("TextButton")
+    ScanBtn.Name = "ScanBtn"
+    ScanBtn.Size = UDim2.new(0, 85, 1, 0)
+    ScanBtn.Position = UDim2.new(0, 290, 0, 0)
+    ScanBtn.BackgroundColor3 = Color3.fromRGB(37, 99, 235)
+    ScanBtn.Text = "🔄 Scan"
+    ScanBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ScanBtn.TextSize = 12
+    ScanBtn.Font = Enum.Font.GothamBold
+    ScanBtn.BorderSizePixel = 0
+    ScanBtn.Parent = ControlBar
+
+    local ScanCorner = Instance.new("UICorner")
+    ScanCorner.CornerRadius = UDim.new(0, 6)
+    ScanCorner.Parent = ScanBtn
+
+    local CopyAllBtn = Instance.new("TextButton")
+    CopyAllBtn.Name = "CopyAllBtn"
+    CopyAllBtn.Size = UDim2.new(0, 105, 1, 0)
+    CopyAllBtn.Position = UDim2.new(0, 382, 0, 0)
+    CopyAllBtn.BackgroundColor3 = Color3.fromRGB(40, 46, 62)
+    CopyAllBtn.Text = "📋 Salin Semua"
+    CopyAllBtn.TextColor3 = Color3.fromRGB(230, 235, 245)
+    CopyAllBtn.TextSize = 11
+    CopyAllBtn.Font = Enum.Font.GothamBold
+    CopyAllBtn.BorderSizePixel = 0
+    CopyAllBtn.Parent = ControlBar
+
+    local CopyCorner = Instance.new("UICorner")
+    CopyCorner.CornerRadius = UDim.new(0, 6)
+    CopyCorner.Parent = CopyAllBtn
+
+    local SaveFileBtn = Instance.new("TextButton")
+    SaveFileBtn.Name = "SaveFileBtn"
+    SaveFileBtn.Size = UDim2.new(0, 95, 1, 0)
+    SaveFileBtn.Position = UDim2.new(0, 494, 0, 0)
+    SaveFileBtn.BackgroundColor3 = Color3.fromRGB(40, 46, 62)
+    SaveFileBtn.Text = "💾 Simpan File"
+    SaveFileBtn.TextColor3 = Color3.fromRGB(230, 235, 245)
+    SaveFileBtn.TextSize = 11
+    SaveFileBtn.Font = Enum.Font.GothamBold
+    SaveFileBtn.BorderSizePixel = 0
+    SaveFileBtn.Parent = ControlBar
+
+    local SaveCorner = Instance.new("UICorner")
+    SaveCorner.CornerRadius = UDim.new(0, 6)
+    SaveCorner.Parent = SaveFileBtn
+
+    local FilterBar = Instance.new("Frame")
+    FilterBar.Name = "FilterBar"
+    FilterBar.Size = UDim2.new(1, -24, 0, 28)
+    FilterBar.Position = UDim2.new(0, 12, 0, 48)
+    FilterBar.BackgroundTransparency = 1
+    FilterBar.Parent = ScannerPanel
+
+    local FilterLayout = Instance.new("UIListLayout")
+    FilterLayout.FillDirection = Enum.FillDirection.Horizontal
+    FilterLayout.Padding = UDim.new(0, 6)
+    FilterLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    FilterLayout.Parent = FilterBar
+
+    local currentFilter = "All"
+    local filterButtons = {}
+
+    local tabs = {
+        { Id = "All", Label = "Semua" },
+        { Id = "RemoteEvent", Label = "RemoteEvent" },
+        { Id = "RemoteFunction", Label = "RemoteFunction" },
+        { Id = "UnreliableRemoteEvent", Label = "Unreliable" },
+        { Id = "BindableEvent", Label = "Bindable" }
+    }
+
+    local ScrollList = Instance.new("ScrollingFrame")
+    ScrollList.Name = "ScrollList"
+    ScrollList.Size = UDim2.new(1, -24, 1, -120)
+    ScrollList.Position = UDim2.new(0, 12, 0, 82)
+    ScrollList.BackgroundColor3 = Color3.fromRGB(14, 16, 22)
+    ScrollList.BorderSizePixel = 0
+    ScrollList.ScrollBarThickness = 5
+    ScrollList.ScrollBarImageColor3 = Color3.fromRGB(60, 68, 88)
+    ScrollList.CanvasSize = UDim2.new(0, 0, 0, 0)
+    ScrollList.Parent = ScannerPanel
+
+    local ScrollCorner = Instance.new("UICorner")
+    ScrollCorner.CornerRadius = UDim.new(0, 8)
+    ScrollCorner.Parent = ScrollList
+
+    local ListLayout = Instance.new("UIListLayout")
+    ListLayout.Padding = UDim.new(0, 4)
+    ListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    ListLayout.Parent = ScrollList
+
+    local ListPadding = Instance.new("UIPadding")
+    ListPadding.PaddingTop = UDim.new(0, 6)
+    ListPadding.PaddingBottom = UDim.new(0, 6)
+    ListPadding.PaddingLeft = UDim.new(0, 6)
+    ListPadding.PaddingRight = UDim.new(0, 6)
+    ListPadding.Parent = ScrollList
+
+    local StatusBar = Instance.new("Frame")
+    StatusBar.Name = "StatusBar"
+    StatusBar.Size = UDim2.new(1, -24, 0, 26)
+    StatusBar.Position = UDim2.new(0, 12, 1, -32)
+    StatusBar.BackgroundColor3 = Color3.fromRGB(24, 27, 36)
+    StatusBar.BorderSizePixel = 0
+    StatusBar.Parent = ScannerPanel
+
+    local StatusCorner = Instance.new("UICorner")
+    StatusCorner.CornerRadius = UDim.new(0, 6)
+    StatusCorner.Parent = StatusBar
+
+    local StatusLabel = Instance.new("TextLabel")
+    StatusLabel.Name = "StatusLabel"
+    StatusLabel.Size = UDim2.new(0.6, 0, 1, 0)
+    StatusLabel.Position = UDim2.new(0, 8, 0, 0)
+    StatusLabel.BackgroundTransparency = 1
+    StatusLabel.Text = "Menunggu pemindaian..."
+    StatusLabel.TextColor3 = Color3.fromRGB(160, 170, 190)
+    StatusLabel.TextSize = 11
+    StatusLabel.Font = Enum.Font.Gotham
+    StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+    StatusLabel.Parent = StatusBar
+
+    local WatcherToggleBtn = Instance.new("TextButton")
+    WatcherToggleBtn.Name = "WatcherToggle"
+    WatcherToggleBtn.Size = UDim2.new(0, 130, 0, 20)
+    WatcherToggleBtn.Position = UDim2.new(1, -135, 0.5, -10)
+    WatcherToggleBtn.BackgroundColor3 = Color3.fromRGB(36, 41, 56)
+    WatcherToggleBtn.Text = "🔴 Watcher: OFF"
+    WatcherToggleBtn.TextColor3 = Color3.fromRGB(200, 205, 220)
+    WatcherToggleBtn.TextSize = 10
+    WatcherToggleBtn.Font = Enum.Font.GothamBold
+    WatcherToggleBtn.BorderSizePixel = 0
+    WatcherToggleBtn.Parent = StatusBar
+
+    local WatcherCorner = Instance.new("UICorner")
+    WatcherCorner.CornerRadius = UDim.new(0, 4)
+    WatcherCorner.Parent = WatcherToggleBtn
+
+    local function renderRemoteItem(remoteData, index)
+        local itemFrame = Instance.new("Frame")
+        itemFrame.Name = "Item_" .. tostring(index)
+        itemFrame.Size = UDim2.new(1, 0, 0, 48)
+        itemFrame.BackgroundColor3 = Color3.fromRGB(22, 25, 34)
+        itemFrame.BorderSizePixel = 0
+
+        local itemCorner = Instance.new("UICorner")
+        itemCorner.CornerRadius = UDim.new(0, 6)
+        itemCorner.Parent = itemFrame
+
+        local badge = Instance.new("TextLabel")
+        badge.Name = "Badge"
+        badge.Size = UDim2.new(0, 86, 0, 18)
+        badge.Position = UDim2.new(0, 8, 0, 6)
+        badge.BackgroundColor3 = CLASS_COLORS[remoteData.ClassName] or Color3.fromRGB(100, 110, 130)
+        badge.TextColor3 = Color3.fromRGB(15, 20, 30)
+        badge.Text = remoteData.ClassName:gsub("Remote", "R"):gsub("Event", "Evt"):gsub("Function", "Func")
+        badge.TextSize = 10
+        badge.Font = Enum.Font.GothamBold
+        badge.BorderSizePixel = 0
+        badge.Parent = itemFrame
+
+        local badgeCorner = Instance.new("UICorner")
+        badgeCorner.CornerRadius = UDim.new(0, 4)
+        badgeCorner.Parent = badge
+
+        local nameLabel = Instance.new("TextLabel")
+        nameLabel.Name = "RemoteName"
+        nameLabel.Size = UDim2.new(1, -210, 0, 18)
+        nameLabel.Position = UDim2.new(0, 100, 0, 6)
+        nameLabel.BackgroundTransparency = 1
+        nameLabel.Text = remoteData.Name
+        nameLabel.TextColor3 = Color3.fromRGB(245, 248, 255)
+        nameLabel.TextSize = 13
+        nameLabel.Font = Enum.Font.GothamBold
+        nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+        nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+        nameLabel.Parent = itemFrame
+
+        local pathLabel = Instance.new("TextLabel")
+        pathLabel.Name = "PathLabel"
+        pathLabel.Size = UDim2.new(1, -210, 0, 16)
+        pathLabel.Position = UDim2.new(0, 10, 0, 26)
+        pathLabel.BackgroundTransparency = 1
+        pathLabel.Text = remoteData.LuaPath
+        pathLabel.TextColor3 = Color3.fromRGB(130, 142, 165)
+        pathLabel.TextSize = 10
+        pathLabel.Font = Enum.Font.Code
+        pathLabel.TextXAlignment = Enum.TextXAlignment.Left
+        pathLabel.TextTruncate = Enum.TextTruncate.AtEnd
+        pathLabel.Parent = itemFrame
+
+        local copyPathBtn = Instance.new("TextButton")
+        copyPathBtn.Name = "CopyPath"
+        copyPathBtn.Size = UDim2.new(0, 88, 0, 24)
+        copyPathBtn.Position = UDim2.new(1, -94, 0.5, -12)
+        copyPathBtn.BackgroundColor3 = Color3.fromRGB(35, 41, 56)
+        copyPathBtn.Text = "📋 Copy Path"
+        copyPathBtn.TextColor3 = Color3.fromRGB(215, 225, 245)
+        copyPathBtn.TextSize = 10
+        copyPathBtn.Font = Enum.Font.GothamMedium
+        copyPathBtn.BorderSizePixel = 0
+        copyPathBtn.Parent = itemFrame
+
+        local copyPathCorner = Instance.new("UICorner")
+        copyPathCorner.CornerRadius = UDim.new(0, 4)
+        copyPathCorner.Parent = copyPathBtn
+
+        copyPathBtn.MouseButton1Click:Connect(function()
+            local ok = copyToClipboard(remoteData.LuaPath)
+            if ok then
+                showToast("Path tersalin!")
+            else
+                print("[SysScanner] Path: " .. remoteData.LuaPath)
+                showToast("Dicetak ke console!", true)
+            end
+        end)
+
+        local copyNameBtn = Instance.new("TextButton")
+        copyNameBtn.Name = "CopyName"
+        copyNameBtn.Size = UDim2.new(0, 80, 0, 24)
+        copyNameBtn.Position = UDim2.new(1, -180, 0.5, -12)
+        copyNameBtn.BackgroundColor3 = Color3.fromRGB(28, 33, 46)
+        copyNameBtn.Text = "Nama"
+        copyNameBtn.TextColor3 = Color3.fromRGB(180, 190, 210)
+        copyNameBtn.TextSize = 10
+        copyNameBtn.Font = Enum.Font.GothamMedium
+        copyNameBtn.BorderSizePixel = 0
+        copyNameBtn.Parent = itemFrame
+
+        local copyNameCorner = Instance.new("UICorner")
+        copyNameCorner.CornerRadius = UDim.new(0, 4)
+        copyNameCorner.Parent = copyNameBtn
+
+        copyNameBtn.MouseButton1Click:Connect(function()
+            local ok = copyToClipboard(remoteData.Name)
+            if ok then
+                showToast("Nama tersalin!")
+            else
+                print("[SysScanner] Name: " .. remoteData.Name)
+                showToast("Dicetak ke console!", true)
+            end
+        end)
+
+        return itemFrame
+    end
+
+    refreshRemoteDisplay = function()
+        for _, child in ipairs(ScrollList:GetChildren()) do
+            if child:IsA("Frame") then child:Destroy() end
+        end
+
+        local searchKeyword = SearchBox.Text:lower()
+        local matched = {}
+
+        for _, r in ipairs(SysScanner.Remotes) do
+            local passClass = (currentFilter == "All") or (r.ClassName == currentFilter)
+            if currentFilter == "Bindable" and (r.ClassName == "BindableEvent" or r.ClassName == "BindableFunction") then
+                passClass = true
+            end
+
+            if passClass then
+                if searchKeyword == "" or r.Name:lower():find(searchKeyword, 1, true) or r.FullName:lower():find(searchKeyword, 1, true) then
+                    table.insert(matched, r)
+                end
+            end
+        end
+
+        for i, remoteData in ipairs(matched) do
+            local item = renderRemoteItem(remoteData, i)
+            item.Parent = ScrollList
+        end
+
+        ScrollList.CanvasSize = UDim2.new(0, 0, 0, #matched * 52)
+        StatusLabel.Text = string.format("Total: %d | Ditampilkan: %d remote", #SysScanner.Remotes, #matched)
+    end
+
+    for i, tabInfo in ipairs(tabs) do
+        local btn = Instance.new("TextButton")
+        btn.Name = "Tab_" .. tabInfo.Id
+        btn.Size = UDim2.new(0, 0, 1, 0)
+        btn.AutomaticSize = Enum.AutomaticSize.X
+        btn.BackgroundColor3 = (tabInfo.Id == currentFilter) and Color3.fromRGB(37, 99, 235) or Color3.fromRGB(26, 30, 42)
+        btn.Text = "  " .. tabInfo.Label .. "  "
+        btn.TextColor3 = Color3.fromRGB(240, 245, 255)
+        btn.TextSize = 11
+        btn.Font = Enum.Font.GothamMedium
+        btn.BorderSizePixel = 0
+        btn.LayoutOrder = i
+        btn.Parent = FilterBar
+
+        local tabCorner = Instance.new("UICorner")
+        tabCorner.CornerRadius = UDim.new(0, 5)
+        tabCorner.Parent = btn
+
+        filterButtons[tabInfo.Id] = btn
+
+        btn.MouseButton1Click:Connect(function()
+            currentFilter = tabInfo.Id
+            for id, b in pairs(filterButtons) do
+                b.BackgroundColor3 = (id == currentFilter) and Color3.fromRGB(37, 99, 235) or Color3.fromRGB(26, 30, 42)
+            end
+            refreshRemoteDisplay()
+        end)
+    end
+
+    SearchBox:GetPropertyChangedSignal("Text"):Connect(refreshRemoteDisplay)
+
+    ScanBtn.MouseButton1Click:Connect(function()
+        StatusLabel.Text = "Memindai game..."
+        ScanBtn.Text = "⏳..."
+        task.wait(0.05)
+        local list = SysScanner.Scan()
+        ScanBtn.Text = "🔄 Scan"
+        showToast(string.format("Ditemukan %d remote!", #list))
+        refreshRemoteDisplay()
+    end)
+
+    CopyAllBtn.MouseButton1Click:Connect(function()
+        local ok = SysScanner.ExportToClipboard(currentFilter)
+        if ok then
+            showToast("Semua remote tersalin!")
+        else
+            showToast("Dicetak ke console!", true)
+        end
+    end)
+
+    SaveFileBtn.MouseButton1Click:Connect(function()
+        local ok = SysScanner.ExportToFile(nil, currentFilter)
+        if ok then
+            showToast("Tersimpan ke file!")
+        else
+            showToast("Gagal simpan file", true)
+        end
+    end)
+
+    WatcherToggleBtn.MouseButton1Click:Connect(function()
+        if SysScanner.IsWatching then
+            SysScanner.StopWatcher()
+            WatcherToggleBtn.Text = "🔴 Watcher: OFF"
+            WatcherToggleBtn.BackgroundColor3 = Color3.fromRGB(36, 41, 56)
+            showToast("Watcher dimatikan")
+        else
+            SysScanner.StartWatcher(function() refreshRemoteDisplay() end)
+            WatcherToggleBtn.Text = "🟢 Watcher: ON"
+            WatcherToggleBtn.BackgroundColor3 = Color3.fromRGB(16, 120, 80)
+            showToast("Watcher aktif!")
+        end
+    end)
+
+    -- ==============================================================================
+    -- [PANEL 2] REMOTESPY UI
+    -- ==============================================================================
+    local SpyControlBar = Instance.new("Frame")
+    SpyControlBar.Name = "SpyControlBar"
+    SpyControlBar.Size = UDim2.new(1, -24, 0, 66)
+    SpyControlBar.Position = UDim2.new(0, 12, 0, 6)
+    SpyControlBar.BackgroundTransparency = 1
+    SpyControlBar.Parent = SpyPanel
+
+    -- Baris 1: Filter & Toggle Controls (Y = 0, Tinggi 28)
+    local SpySearchBox = Instance.new("TextBox")
+    SpySearchBox.Name = "SpySearchBox"
+    SpySearchBox.Size = UDim2.new(0, 220, 0, 28)
+    SpySearchBox.Position = UDim2.new(0, 0, 0, 0)
+    SpySearchBox.BackgroundColor3 = Color3.fromRGB(26, 30, 42)
+    SpySearchBox.TextColor3 = Color3.fromRGB(240, 245, 255)
+    SpySearchBox.PlaceholderColor3 = Color3.fromRGB(120, 130, 150)
+    SpySearchBox.PlaceholderText = "🔍 Filter panggilan..."
+    SpySearchBox.Text = ""
+    SpySearchBox.TextSize = 11
+    SpySearchBox.Font = Enum.Font.Gotham
+    SpySearchBox.TextXAlignment = Enum.TextXAlignment.Left
+    SpySearchBox.ClearTextOnFocus = false
+    SpySearchBox.BorderSizePixel = 0
+    SpySearchBox.Parent = SpyControlBar
+
+    local SpySearchPad = Instance.new("UIPadding")
+    SpySearchPad.PaddingLeft = UDim.new(0, 8)
+    SpySearchPad.Parent = SpySearchBox
+
+    local SpySearchCorner = Instance.new("UICorner")
+    SpySearchCorner.CornerRadius = UDim.new(0, 6)
+    SpySearchCorner.Parent = SpySearchBox
+
+    local SpyToggleBtn = Instance.new("TextButton")
+    SpyToggleBtn.Name = "SpyToggleBtn"
+    SpyToggleBtn.Size = UDim2.new(0, 95, 0, 28)
+    SpyToggleBtn.Position = UDim2.new(0, 226, 0, 0)
+    SpyToggleBtn.BackgroundColor3 = Color3.fromRGB(16, 120, 80)
+    SpyToggleBtn.Text = "🟢 Spy: ON"
+    SpyToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    SpyToggleBtn.TextSize = 11
+    SpyToggleBtn.Font = Enum.Font.GothamBold
+    SpyToggleBtn.BorderSizePixel = 0
+    SpyToggleBtn.Parent = SpyControlBar
+
+    local SpyToggleCorner = Instance.new("UICorner")
+    SpyToggleCorner.CornerRadius = UDim.new(0, 6)
+    SpyToggleCorner.Parent = SpyToggleBtn
+
+    local SpamToggleBtn = Instance.new("TextButton")
+    SpamToggleBtn.Name = "SpamToggleBtn"
+    SpamToggleBtn.Size = UDim2.new(0, 95, 0, 28)
+    SpamToggleBtn.Position = UDim2.new(0, 327, 0, 0)
+    SpamToggleBtn.BackgroundColor3 = Color3.fromRGB(37, 99, 235)
+    SpamToggleBtn.Text = "🛡️ Anti-Spam"
+    SpamToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    SpamToggleBtn.TextSize = 11
+    SpamToggleBtn.Font = Enum.Font.GothamBold
+    SpamToggleBtn.BorderSizePixel = 0
+    SpamToggleBtn.Parent = SpyControlBar
+
+    local SpamCorner = Instance.new("UICorner")
+    SpamCorner.CornerRadius = UDim.new(0, 6)
+    SpamCorner.Parent = SpamToggleBtn
+
+    local TestBtn = Instance.new("TextButton")
+    TestBtn.Name = "TestBtn"
+    TestBtn.Size = UDim2.new(0, 85, 0, 28)
+    TestBtn.Position = UDim2.new(0, 428, 0, 0)
+    TestBtn.BackgroundColor3 = Color3.fromRGB(16, 120, 80)
+    TestBtn.Text = "⚡ Test Spy"
+    TestBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    TestBtn.TextSize = 11
+    TestBtn.Font = Enum.Font.GothamBold
+    TestBtn.BorderSizePixel = 0
+    TestBtn.Parent = SpyControlBar
+
+    local TestCorner = Instance.new("UICorner")
+    TestCorner.CornerRadius = UDim.new(0, 6)
+    TestCorner.Parent = TestBtn
+
+    local ClearLogsBtn = Instance.new("TextButton")
+    ClearLogsBtn.Name = "ClearLogsBtn"
+    ClearLogsBtn.Size = UDim2.new(0, 95, 0, 28)
+    ClearLogsBtn.Position = UDim2.new(0, 519, 0, 0)
+    ClearLogsBtn.BackgroundColor3 = Color3.fromRGB(40, 46, 62)
+    ClearLogsBtn.Text = "🗑️ Hapus"
+    ClearLogsBtn.TextColor3 = Color3.fromRGB(230, 235, 245)
+    ClearLogsBtn.TextSize = 11
+    ClearLogsBtn.Font = Enum.Font.GothamBold
+    ClearLogsBtn.BorderSizePixel = 0
+    ClearLogsBtn.Parent = SpyControlBar
+
+    local ClearCorner = Instance.new("UICorner")
+    ClearCorner.CornerRadius = UDim.new(0, 6)
+    ClearCorner.Parent = ClearLogsBtn
+
+    -- Baris 2: Export & Batch Actions (Y = 34, Tinggi 28)
+    local CopyAllSpyBtn = Instance.new("TextButton")
+    CopyAllSpyBtn.Name = "CopyAllSpyBtn"
+    CopyAllSpyBtn.Size = UDim2.new(0, 175, 0, 28)
+    CopyAllSpyBtn.Position = UDim2.new(0, 0, 0, 34)
+    CopyAllSpyBtn.BackgroundColor3 = Color3.fromRGB(37, 99, 235)
+    CopyAllSpyBtn.Text = "📋 Salin Semua Script"
+    CopyAllSpyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    CopyAllSpyBtn.TextSize = 11
+    CopyAllSpyBtn.Font = Enum.Font.GothamBold
+    CopyAllSpyBtn.BorderSizePixel = 0
+    CopyAllSpyBtn.Parent = SpyControlBar
+
+    local CopyAllCorner = Instance.new("UICorner")
+    CopyAllCorner.CornerRadius = UDim.new(0, 6)
+    CopyAllCorner.Parent = CopyAllSpyBtn
+
+    local CopyLatestBtn = Instance.new("TextButton")
+    CopyLatestBtn.Name = "CopyLatestBtn"
+    CopyLatestBtn.Size = UDim2.new(0, 120, 0, 28)
+    CopyLatestBtn.Position = UDim2.new(0, 181, 0, 34)
+    CopyLatestBtn.BackgroundColor3 = Color3.fromRGB(40, 46, 62)
+    CopyLatestBtn.Text = "📋 Salin Terakhir"
+    CopyLatestBtn.TextColor3 = Color3.fromRGB(230, 235, 245)
+    CopyLatestBtn.TextSize = 11
+    CopyLatestBtn.Font = Enum.Font.GothamBold
+    CopyLatestBtn.BorderSizePixel = 0
+    CopyLatestBtn.Parent = SpyControlBar
+
+    local CopyLatestCorner = Instance.new("UICorner")
+    CopyLatestCorner.CornerRadius = UDim.new(0, 6)
+    CopyLatestCorner.Parent = CopyLatestBtn
+
+    local SaveSpyFileBtn = Instance.new("TextButton")
+    SaveSpyFileBtn.Name = "SaveSpyFileBtn"
+    SaveSpyFileBtn.Size = UDim2.new(0, 135, 0, 28)
+    SaveSpyFileBtn.Position = UDim2.new(0, 307, 0, 34)
+    SaveSpyFileBtn.BackgroundColor3 = Color3.fromRGB(40, 46, 62)
+    SaveSpyFileBtn.Text = "💾 Simpan File Log"
+    SaveSpyFileBtn.TextColor3 = Color3.fromRGB(230, 235, 245)
+    SaveSpyFileBtn.TextSize = 11
+    SaveSpyFileBtn.Font = Enum.Font.GothamBold
+    SaveSpyFileBtn.BorderSizePixel = 0
+    SaveSpyFileBtn.Parent = SpyControlBar
+
+    local SaveSpyCorner = Instance.new("UICorner")
+    SaveSpyCorner.CornerRadius = UDim.new(0, 6)
+    SaveSpyCorner.Parent = SaveSpyFileBtn
+
+    local SpyScrollList = Instance.new("ScrollingFrame")
+    SpyScrollList.Name = "SpyScrollList"
+    SpyScrollList.Size = UDim2.new(1, -24, 1, -114)
+    SpyScrollList.Position = UDim2.new(0, 12, 0, 76)
+    SpyScrollList.BackgroundColor3 = Color3.fromRGB(14, 16, 22)
+    SpyScrollList.BorderSizePixel = 0
+    SpyScrollList.ScrollBarThickness = 5
+    SpyScrollList.ScrollBarImageColor3 = Color3.fromRGB(60, 68, 88)
+    SpyScrollList.CanvasSize = UDim2.new(0, 0, 0, 0)
+    SpyScrollList.Parent = SpyPanel
+
+    local SpyScrollCorner = Instance.new("UICorner")
+    SpyScrollCorner.CornerRadius = UDim.new(0, 8)
+    SpyScrollCorner.Parent = SpyScrollList
+
+    local SpyListLayout = Instance.new("UIListLayout")
+    SpyListLayout.Padding = UDim.new(0, 4)
+    SpyListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    SpyListLayout.Parent = SpyScrollList
+
+    local SpyListPadding = Instance.new("UIPadding")
+    SpyListPadding.PaddingTop = UDim.new(0, 6)
+    SpyListPadding.PaddingBottom = UDim.new(0, 6)
+    SpyListPadding.PaddingLeft = UDim.new(0, 6)
+    SpyListPadding.PaddingRight = UDim.new(0, 6)
+    SpyListPadding.Parent = SpyScrollList
+
+    local SpyStatusBar = Instance.new("Frame")
+    SpyStatusBar.Name = "SpyStatusBar"
+    SpyStatusBar.Size = UDim2.new(1, -24, 0, 26)
+    SpyStatusBar.Position = UDim2.new(0, 12, 1, -32)
+    SpyStatusBar.BackgroundColor3 = Color3.fromRGB(24, 27, 36)
+    SpyStatusBar.BorderSizePixel = 0
+    SpyStatusBar.Parent = SpyPanel
+
+    local SpyStatusCorner = Instance.new("UICorner")
+    SpyStatusCorner.CornerRadius = UDim.new(0, 6)
+    SpyStatusCorner.Parent = SpyStatusBar
+
+    local SpyStatusLabel = Instance.new("TextLabel")
+    SpyStatusLabel.Name = "SpyStatusLabel"
+    SpyStatusLabel.Size = UDim2.new(1, -16, 1, 0)
+    SpyStatusLabel.Position = UDim2.new(0, 8, 0, 0)
+    SpyStatusLabel.BackgroundTransparency = 1
+    SpyStatusLabel.Text = "RemoteSpy siap memantau panggilan client -> server..."
+    SpyStatusLabel.TextColor3 = Color3.fromRGB(160, 170, 190)
+    SpyStatusLabel.TextSize = 11
+    SpyStatusLabel.Font = Enum.Font.Gotham
+    SpyStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+    SpyStatusLabel.Parent = SpyStatusBar
+
+    local function renderSpyLogItem(logItem, index)
+        local row = Instance.new("Frame")
+        row.Name = "SpyRow_" .. tostring(index)
+        row.Size = UDim2.new(1, 0, 0, 50)
+        row.BackgroundColor3 = Color3.fromRGB(22, 25, 34)
+        row.BorderSizePixel = 0
+
+        local rowCorner = Instance.new("UICorner")
+        rowCorner.CornerRadius = UDim.new(0, 6)
+        rowCorner.Parent = row
+
+        local mBadge = Instance.new("TextLabel")
+        mBadge.Name = "MethodBadge"
+        mBadge.Size = UDim2.new(0, 84, 0, 18)
+        mBadge.Position = UDim2.new(0, 8, 0, 6)
+        mBadge.BackgroundColor3 = (logItem.Method:find("Invoke")) and Color3.fromRGB(168, 85, 247) or Color3.fromRGB(56, 189, 248)
+        mBadge.TextColor3 = Color3.fromRGB(15, 20, 30)
+        mBadge.Text = logItem.Method
+        mBadge.TextSize = 10
+        mBadge.Font = Enum.Font.GothamBold
+        mBadge.BorderSizePixel = 0
+        mBadge.Parent = row
+
+        local mCorner = Instance.new("UICorner")
+        mCorner.CornerRadius = UDim.new(0, 4)
+        mCorner.Parent = mBadge
+
+        local nameLabel = Instance.new("TextLabel")
+        nameLabel.Name = "NameLabel"
+        nameLabel.Size = UDim2.new(1, -210, 0, 18)
+        nameLabel.Position = UDim2.new(0, 98, 0, 6)
+        nameLabel.BackgroundTransparency = 1
+        nameLabel.Text = string.format("[%s] %s", logItem.Time, logItem.Name)
+        nameLabel.TextColor3 = Color3.fromRGB(245, 248, 255)
+        nameLabel.TextSize = 12
+        nameLabel.Font = Enum.Font.GothamBold
+        nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+        nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+        nameLabel.Parent = row
+
+        local argLabel = Instance.new("TextLabel")
+        argLabel.Name = "ArgLabel"
+        argLabel.Size = UDim2.new(1, -210, 0, 16)
+        argLabel.Position = UDim2.new(0, 10, 0, 28)
+        argLabel.BackgroundTransparency = 1
+        argLabel.Text = "Args: " .. logItem.ArgPreview
+        argLabel.TextColor3 = Color3.fromRGB(165, 180, 205)
+        argLabel.TextSize = 11
+        argLabel.Font = Enum.Font.Code
+        argLabel.TextXAlignment = Enum.TextXAlignment.Left
+        argLabel.TextTruncate = Enum.TextTruncate.AtEnd
+        argLabel.Parent = row
+
+        local copyCodeBtn = Instance.new("TextButton")
+        copyCodeBtn.Name = "CopyCodeBtn"
+        copyCodeBtn.Size = UDim2.new(0, 92, 0, 26)
+        copyCodeBtn.Position = UDim2.new(1, -98, 0.5, -13)
+        copyCodeBtn.BackgroundColor3 = Color3.fromRGB(37, 99, 235)
+        copyCodeBtn.Text = "📋 Copy Script"
+        copyCodeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        copyCodeBtn.TextSize = 10
+        copyCodeBtn.Font = Enum.Font.GothamBold
+        copyCodeBtn.BorderSizePixel = 0
+        copyCodeBtn.Parent = row
+
+        local copyCodeCorner = Instance.new("UICorner")
+        copyCodeCorner.CornerRadius = UDim.new(0, 4)
+        copyCodeCorner.Parent = copyCodeBtn
+
+        copyCodeBtn.MouseButton1Click:Connect(function()
+            local ok = copyToClipboard(logItem.Code)
+            if ok then
+                showToast("Script tersalin!")
+            else
+                print("\n-- [SysScanner Spy Script] --\n" .. logItem.Code .. "\n")
+                showToast("Dicetak ke console!", true)
+            end
+        end)
+
+        local viewBtn = Instance.new("TextButton")
+        viewBtn.Name = "ViewBtn"
+        viewBtn.Size = UDim2.new(0, 75, 0, 26)
+        viewBtn.Position = UDim2.new(1, -178, 0.5, -13)
+        viewBtn.BackgroundColor3 = Color3.fromRGB(35, 41, 56)
+        viewBtn.Text = "🔍 Detail"
+        viewBtn.TextColor3 = Color3.fromRGB(200, 210, 230)
+        viewBtn.TextSize = 10
+        viewBtn.Font = Enum.Font.GothamMedium
+        viewBtn.BorderSizePixel = 0
+        viewBtn.Parent = row
+
+        local viewCorner = Instance.new("UICorner")
+        viewCorner.CornerRadius = UDim.new(0, 4)
+        viewCorner.Parent = viewBtn
+
+        viewBtn.MouseButton1Click:Connect(function()
+            print("\n================ [DETAIL REMOTE CALL] ================")
+            print("Remote : " .. logItem.Path)
+            print("Method : " .. logItem.Method)
+            print("Waktu  : " .. logItem.Time)
+            print("Kode   :\n" .. logItem.Code)
+            print("=====================================================\n")
+            showToast("Detail dicetak ke F9!")
+        end)
+
+        return row
+    end
+
+    refreshSpyDisplay = function()
+        for _, child in ipairs(SpyScrollList:GetChildren()) do
+            if child:IsA("Frame") then child:Destroy() end
+        end
+
+        local searchKey = SpySearchBox.Text:lower()
+        local matchedLogs = {}
+
+        for _, logItem in ipairs(SysScanner.SpyLogs) do
+            if searchKey == "" or logItem.Name:lower():find(searchKey, 1, true) or logItem.ArgPreview:lower():find(searchKey, 1, true) then
+                table.insert(matchedLogs, logItem)
+            end
+        end
+
+        for i, logItem in ipairs(matchedLogs) do
+            local row = renderSpyLogItem(logItem, i)
+            row.Parent = SpyScrollList
+        end
+
+        SpyScrollList.CanvasSize = UDim2.new(0, 0, 0, #matchedLogs * 54)
+        SpyStatusLabel.Text = string.format("Total Log: %d panggilan | Ditampilkan: %d", #SysScanner.SpyLogs, #matchedLogs)
+    end
+
+    SpySearchBox:GetPropertyChangedSignal("Text"):Connect(refreshSpyDisplay)
+
+    SpyToggleBtn.MouseButton1Click:Connect(function()
+        if SysScanner.IsSpying then
+            SysScanner.StopSpy()
+            SpyToggleBtn.Text = "🔴 Spy: OFF"
+            SpyToggleBtn.BackgroundColor3 = Color3.fromRGB(36, 41, 56)
+            showToast("RemoteSpy dinonaktifkan")
+        else
+            local ok = SysScanner.StartSpy()
+            if ok then
+                SpyToggleBtn.Text = "🟢 Spy: ON"
+                SpyToggleBtn.BackgroundColor3 = Color3.fromRGB(16, 120, 80)
+                showToast("RemoteSpy aktif!")
+            else
+                showToast("Gagal aktifkan Spy", true)
+            end
+        end
+    end)
+
+    SpamToggleBtn.MouseButton1Click:Connect(function()
+        SysScanner.FilterSpam = not SysScanner.FilterSpam
+        if SysScanner.FilterSpam then
+            SpamToggleBtn.BackgroundColor3 = Color3.fromRGB(37, 99, 235)
+            SpamToggleBtn.Text = "🛡️ Anti-Spam"
+            showToast("Filter spam: Aktif")
+        else
+            SpamToggleBtn.BackgroundColor3 = Color3.fromRGB(40, 46, 62)
+            SpamToggleBtn.Text = "⚠️ Semua Log"
+            showToast("Filter spam: Mati")
+        end
+    end)
+
+    ClearLogsBtn.MouseButton1Click:Connect(function()
+        SysScanner.ClearSpyLogs()
+        refreshSpyDisplay()
+        showToast("Log dibersihkan!")
+    end)
+
+    CopyAllSpyBtn.MouseButton1Click:Connect(function()
+        if #SysScanner.SpyLogs > 0 then
+            local ok = SysScanner.ExportSpyLogsToClipboard(SpySearchBox.Text)
+            if ok then
+                showToast("Semua script (" .. #SysScanner.SpyLogs .. ") tersalin!")
+            else
+                print("\n-- [SEMUA PANGGILAN REMOTESPY] --\n" .. SysScanner.ExportSpyLogsToString(SpySearchBox.Text) .. "\n")
+                showToast("Dicetak ke console F9!", true)
+            end
+        else
+            showToast("Belum ada panggilan!", true)
+        end
+    end)
+
+    SaveSpyFileBtn.MouseButton1Click:Connect(function()
+        if #SysScanner.SpyLogs > 0 then
+            local ok = SysScanner.ExportSpyLogsToFile(nil, SpySearchBox.Text)
+            if ok then
+                showToast("Log tersimpan ke file!")
+            else
+                showToast("Gagal simpan file", true)
+            end
+        else
+            showToast("Belum ada panggilan!", true)
+        end
+    end)
+
+    CopyLatestBtn.MouseButton1Click:Connect(function()
+        if #SysScanner.SpyLogs > 0 then
+            local latest = SysScanner.SpyLogs[1]
+            local ok = copyToClipboard(latest.Code)
+            if ok then
+                showToast("Script terakhir tersalin!")
+            else
+                print("\n-- [Script Terakhir] --\n" .. latest.Code .. "\n")
+                showToast("Dicetak ke F9!", true)
+            end
+        else
+            showToast("Belum ada panggilan!", true)
+        end
+    end)
+
+    SysScanner.OnSpyLog = function()
+        if refreshSpyDisplay then
+            pcall(refreshSpyDisplay)
+        end
+    end
+
+    -- ==============================================================================
+    -- [PANEL 3] GAME DATA INSPECTOR UI (Workspace, Player, ReplicatedStorage)
+    -- ==============================================================================
+    local DataControlBar = Instance.new("Frame")
+    DataControlBar.Name = "DataControlBar"
+    DataControlBar.Size = UDim2.new(1, -24, 0, 36)
+    DataControlBar.Position = UDim2.new(0, 12, 0, 6)
+    DataControlBar.BackgroundTransparency = 1
+    DataControlBar.Parent = DataPanel
+
+    local DataSearchBox = Instance.new("TextBox")
+    DataSearchBox.Name = "DataSearchBox"
+    DataSearchBox.Size = UDim2.new(0, 260, 1, 0)
+    DataSearchBox.BackgroundColor3 = Color3.fromRGB(26, 30, 42)
+    DataSearchBox.TextColor3 = Color3.fromRGB(240, 245, 255)
+    DataSearchBox.PlaceholderColor3 = Color3.fromRGB(120, 130, 150)
+    DataSearchBox.PlaceholderText = "🔍 Cari data (nama / value)..."
+    DataSearchBox.Text = ""
+    DataSearchBox.TextSize = 11
+    DataSearchBox.Font = Enum.Font.Gotham
+    DataSearchBox.TextXAlignment = Enum.TextXAlignment.Left
+    DataSearchBox.ClearTextOnFocus = false
+    DataSearchBox.BorderSizePixel = 0
+    DataSearchBox.Parent = DataControlBar
+
+    local DataSearchPad = Instance.new("UIPadding")
+    DataSearchPad.PaddingLeft = UDim.new(0, 10)
+    DataSearchPad.Parent = DataSearchBox
+
+    local DataSearchCorner = Instance.new("UICorner")
+    DataSearchCorner.CornerRadius = UDim.new(0, 6)
+    DataSearchCorner.Parent = DataSearchBox
+
+    local DataScanBtn = Instance.new("TextButton")
+    DataScanBtn.Name = "DataScanBtn"
+    DataScanBtn.Size = UDim2.new(0, 105, 1, 0)
+    DataScanBtn.Position = UDim2.new(0, 270, 0, 0)
+    DataScanBtn.BackgroundColor3 = Color3.fromRGB(37, 99, 235)
+            DataScanBtn.Text = "Scan Data"
+    DataScanBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    DataScanBtn.TextSize = 11
+    DataScanBtn.Font = Enum.Font.GothamBold
+    DataScanBtn.BorderSizePixel = 0
+    DataScanBtn.Parent = DataControlBar
+
+    local DataScanCorner = Instance.new("UICorner")
+    DataScanCorner.CornerRadius = UDim.new(0, 6)
+    DataScanCorner.Parent = DataScanBtn
+
+    local DataCopyAllBtn = Instance.new("TextButton")
+    DataCopyAllBtn.Name = "DataCopyAllBtn"
+    DataCopyAllBtn.Size = UDim2.new(0, 110, 1, 0)
+    DataCopyAllBtn.Position = UDim2.new(0, 382, 0, 0)
+    DataCopyAllBtn.BackgroundColor3 = Color3.fromRGB(40, 46, 62)
+    DataCopyAllBtn.Text = "📋 Salin Data"
+    DataCopyAllBtn.TextColor3 = Color3.fromRGB(230, 235, 245)
+    DataCopyAllBtn.TextSize = 11
+    DataCopyAllBtn.Font = Enum.Font.GothamBold
+    DataCopyAllBtn.BorderSizePixel = 0
+    DataCopyAllBtn.Parent = DataControlBar
+
+    local DataCopyCorner = Instance.new("UICorner")
+    DataCopyCorner.CornerRadius = UDim.new(0, 6)
+    DataCopyCorner.Parent = DataCopyAllBtn
+
+    local DataSaveFileBtn = Instance.new("TextButton")
+    DataSaveFileBtn.Name = "DataSaveFileBtn"
+    DataSaveFileBtn.Size = UDim2.new(0, 100, 1, 0)
+    DataSaveFileBtn.Position = UDim2.new(0, 498, 0, 0)
+    DataSaveFileBtn.BackgroundColor3 = Color3.fromRGB(40, 46, 62)
+    DataSaveFileBtn.Text = "💾 Simpan File"
+    DataSaveFileBtn.TextColor3 = Color3.fromRGB(230, 235, 245)
+    DataSaveFileBtn.TextSize = 11
+    DataSaveFileBtn.Font = Enum.Font.GothamBold
+    DataSaveFileBtn.BorderSizePixel = 0
+    DataSaveFileBtn.Parent = DataControlBar
+
+    local DataSaveCorner = Instance.new("UICorner")
+    DataSaveCorner.CornerRadius = UDim.new(0, 6)
+    DataSaveCorner.Parent = DataSaveFileBtn
+
+    -- Category Filter Tabs for Game Data
+    local DataFilterBar = Instance.new("Frame")
+    DataFilterBar.Name = "DataFilterBar"
+    DataFilterBar.Size = UDim2.new(1, -24, 0, 28)
+    DataFilterBar.Position = UDim2.new(0, 12, 0, 48)
+    DataFilterBar.BackgroundTransparency = 1
+    DataFilterBar.Parent = DataPanel
+
+    local DataFilterLayout = Instance.new("UIListLayout")
+    DataFilterLayout.FillDirection = Enum.FillDirection.Horizontal
+    DataFilterLayout.Padding = UDim.new(0, 6)
+    DataFilterLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    DataFilterLayout.Parent = DataFilterBar
+
+    local currentDataFilter = "All"
+    local dataFilterButtons = {}
+
+    local dataTabs = {
+        { Id = "All", Label = "Semua Data" },
+        { Id = "ReplicatedStorage", Label = "ReplicatedStorage" },
+        { Id = "PlayerScripts", Label = "PlayerScripts" },
+        { Id = "Workspace", Label = "Workspace" },
+        { Id = "Modules", Label = "Modules (Tables)" },
+        { Id = "Player", Label = "Player Profile" }
+    }
+
+    local DataScrollList = Instance.new("ScrollingFrame")
+    DataScrollList.Name = "DataScrollList"
+    DataScrollList.Size = UDim2.new(1, -24, 1, -120)
+    DataScrollList.Position = UDim2.new(0, 12, 0, 82)
+    DataScrollList.BackgroundColor3 = Color3.fromRGB(14, 16, 22)
+    DataScrollList.BorderSizePixel = 0
+    DataScrollList.ScrollBarThickness = 5
+    DataScrollList.ScrollBarImageColor3 = Color3.fromRGB(60, 68, 88)
+    DataScrollList.CanvasSize = UDim2.new(0, 0, 0, 0)
+    DataScrollList.Parent = DataPanel
+
+    local DataScrollCorner = Instance.new("UICorner")
+    DataScrollCorner.CornerRadius = UDim.new(0, 8)
+    DataScrollCorner.Parent = DataScrollList
+
+    local DataListLayout = Instance.new("UIListLayout")
+    DataListLayout.Padding = UDim.new(0, 4)
+    DataListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    DataListLayout.Parent = DataScrollList
+
+    local DataListPadding = Instance.new("UIPadding")
+    DataListPadding.PaddingTop = UDim.new(0, 6)
+    DataListPadding.PaddingBottom = UDim.new(0, 6)
+    DataListPadding.PaddingLeft = UDim.new(0, 6)
+    DataListPadding.PaddingRight = UDim.new(0, 6)
+    DataListPadding.Parent = DataScrollList
+
+    local DataStatusBar = Instance.new("Frame")
+    DataStatusBar.Name = "DataStatusBar"
+    DataStatusBar.Size = UDim2.new(1, -24, 0, 26)
+    DataStatusBar.Position = UDim2.new(0, 12, 1, -32)
+    DataStatusBar.BackgroundColor3 = Color3.fromRGB(24, 27, 36)
+    DataStatusBar.BorderSizePixel = 0
+    DataStatusBar.Parent = DataPanel
+
+    local DataStatusCorner = Instance.new("UICorner")
+    DataStatusCorner.CornerRadius = UDim.new(0, 6)
+    DataStatusCorner.Parent = DataStatusBar
+
+    local DataStatusLabel = Instance.new("TextLabel")
+    DataStatusLabel.Name = "DataStatusLabel"
+    DataStatusLabel.Size = UDim2.new(1, -16, 1, 0)
+    DataStatusLabel.Position = UDim2.new(0, 8, 0, 0)
+    DataStatusLabel.BackgroundTransparency = 1
+    DataStatusLabel.Text = "Menunggu pemindaian data game..."
+    DataStatusLabel.TextColor3 = Color3.fromRGB(160, 170, 190)
+    DataStatusLabel.TextSize = 11
+    DataStatusLabel.Font = Enum.Font.Gotham
+    DataStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+    DataStatusLabel.Parent = DataStatusBar
+
+    local function renderDataItem(itemData, index)
+        local row = Instance.new("Frame")
+        row.Name = "DataRow_" .. tostring(index)
+        row.Size = UDim2.new(1, 0, 0, 52)
+        row.BackgroundColor3 = Color3.fromRGB(22, 25, 34)
+        row.BorderSizePixel = 0
+
+        local rowCorner = Instance.new("UICorner")
+        rowCorner.CornerRadius = UDim.new(0, 6)
+        rowCorner.Parent = row
+
+        -- Category Badge
+        local catBadge = Instance.new("TextLabel")
+        catBadge.Name = "CategoryBadge"
+        catBadge.Size = UDim2.new(0, 96, 0, 18)
+        catBadge.Position = UDim2.new(0, 8, 0, 6)
+        catBadge.BackgroundColor3 = CATEGORY_COLORS[itemData.Category] or Color3.fromRGB(100, 110, 130)
+        catBadge.TextColor3 = Color3.fromRGB(15, 20, 30)
+        catBadge.Text = itemData.Category
+        catBadge.TextSize = 10
+        catBadge.Font = Enum.Font.GothamBold
+        catBadge.BorderSizePixel = 0
+        catBadge.Parent = row
+
+        local catCorner = Instance.new("UICorner")
+        catCorner.CornerRadius = UDim.new(0, 4)
+        catCorner.Parent = catBadge
+
+        -- Name and Source Title
+        local nameLabel = Instance.new("TextLabel")
+        nameLabel.Name = "NameLabel"
+        nameLabel.Size = UDim2.new(1, -250, 0, 18)
+        nameLabel.Position = UDim2.new(0, 110, 0, 6)
+        nameLabel.BackgroundTransparency = 1
+        nameLabel.Text = string.format("%s  (%s)", itemData.Name, itemData.Source)
+        nameLabel.TextColor3 = Color3.fromRGB(245, 248, 255)
+        nameLabel.TextSize = 12
+        nameLabel.Font = Enum.Font.GothamBold
+        nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+        nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+        nameLabel.Parent = row
+
+        -- Value Preview
+        local valLabel = Instance.new("TextLabel")
+        valLabel.Name = "ValLabel"
+        valLabel.Size = UDim2.new(1, -250, 0, 16)
+        valLabel.Position = UDim2.new(0, 10, 0, 28)
+        valLabel.BackgroundTransparency = 1
+        valLabel.Text = "Value: " .. tostring(itemData.Value)
+        valLabel.TextColor3 = Color3.fromRGB(160, 205, 250)
+        valLabel.TextSize = 11
+        valLabel.Font = Enum.Font.Code
+        valLabel.TextXAlignment = Enum.TextXAlignment.Left
+        valLabel.TextTruncate = Enum.TextTruncate.AtEnd
+        valLabel.Parent = row
+
+        -- Copy Value Button
+        local copyValBtn = Instance.new("TextButton")
+        copyValBtn.Name = "CopyValBtn"
+        copyValBtn.Size = UDim2.new(0, 80, 0, 24)
+        copyValBtn.Position = UDim2.new(1, -86, 0.5, -12)
+        copyValBtn.BackgroundColor3 = Color3.fromRGB(37, 99, 235)
+        copyValBtn.Text = itemData.IsModule and "📋 Dump" or "📋 Copy Val"
+        copyValBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        copyValBtn.TextSize = 10
+        copyValBtn.Font = Enum.Font.GothamBold
+        copyValBtn.BorderSizePixel = 0
+        copyValBtn.Parent = row
+
+        local copyValCorner = Instance.new("UICorner")
+        copyValCorner.CornerRadius = UDim.new(0, 4)
+        copyValCorner.Parent = copyValBtn
+
+        copyValBtn.MouseButton1Click:Connect(function()
+            local textToCopy = toLuaString(itemData.RawValue, 0)
+            local ok = copyToClipboard(textToCopy)
+            if ok then
+                showToast("Nilai tersalin!")
+            else
+                print("\n-- [DATA VALUE: " .. itemData.Name .. "] --\n" .. textToCopy .. "\n")
+                showToast("Dicetak ke console!", true)
+            end
+        end)
+
+        -- Copy Path Button
+        local copyPathBtn = Instance.new("TextButton")
+        copyPathBtn.Name = "CopyPathBtn"
+        copyPathBtn.Size = UDim2.new(0, 75, 0, 24)
+        copyPathBtn.Position = UDim2.new(1, -168, 0.5, -12)
+        copyPathBtn.BackgroundColor3 = Color3.fromRGB(35, 41, 56)
+        copyPathBtn.Text = "Path"
+        copyPathBtn.TextColor3 = Color3.fromRGB(215, 225, 245)
+        copyPathBtn.TextSize = 10
+        copyPathBtn.Font = Enum.Font.GothamMedium
+        copyPathBtn.BorderSizePixel = 0
+        copyPathBtn.Parent = row
+
+        local copyPathCorner = Instance.new("UICorner")
+        copyPathCorner.CornerRadius = UDim.new(0, 4)
+        copyPathCorner.Parent = copyPathBtn
+
+        copyPathBtn.MouseButton1Click:Connect(function()
+            local ok = copyToClipboard(itemData.Path)
+            if ok then
+                showToast("Path tersalin!")
+            else
+                print("[SysScanner] Path: " .. itemData.Path)
+                showToast("Dicetak ke console!", true)
+            end
+        end)
+
+        -- Detail Button
+        local detailBtn = Instance.new("TextButton")
+        detailBtn.Name = "DetailBtn"
+        detailBtn.Size = UDim2.new(0, 60, 0, 24)
+        detailBtn.Position = UDim2.new(1, -234, 0.5, -12)
+        detailBtn.BackgroundColor3 = Color3.fromRGB(28, 33, 46)
+        detailBtn.Text = "🔍 Rinci"
+        detailBtn.TextColor3 = Color3.fromRGB(180, 190, 210)
+        detailBtn.TextSize = 10
+        detailBtn.Font = Enum.Font.GothamMedium
+        detailBtn.BorderSizePixel = 0
+        detailBtn.Parent = row
+
+        local detailCorner = Instance.new("UICorner")
+        detailCorner.CornerRadius = UDim.new(0, 4)
+        detailCorner.Parent = detailBtn
+
+        detailBtn.MouseButton1Click:Connect(function()
+            print("\n================ [DETAIL DATA GAME] ================")
+            print("Kategori : " .. itemData.Category)
+            print("Sumber   : " .. itemData.Source)
+            print("Nama     : " .. itemData.Name)
+            print("Tipe     : " .. itemData.Type)
+            print("Path     : " .. itemData.Path)
+            print("Isi Data :\n" .. toLuaString(itemData.RawValue, 1))
+            print("====================================================\n")
+            showToast("Rincian dicetak ke F9!")
+        end)
+
+        return row
+    end
+
+    refreshDataDisplay = function()
+        for _, child in ipairs(DataScrollList:GetChildren()) do
+            if child:IsA("Frame") then child:Destroy() end
+        end
+
+        local searchKey = DataSearchBox.Text:lower()
+        local matched = {}
+
+        for _, item in ipairs(SysScanner.GameData) do
+            local passCat = (currentDataFilter == "All") or (item.Category == currentDataFilter)
+            if currentDataFilter == "Player" and (item.Category == "PlayerScripts" or item.Category == "Player") then
+                passCat = true
+            elseif currentDataFilter == "ReplicatedStorage" and (item.Category == "Features" or item.Category == "Content" or item.Category == "Modules" or item.Category == "ReplicatedStorage") then
+                passCat = true
+            end
+            if passCat then
+                if searchKey == "" or item.Name:lower():find(searchKey, 1, true) or tostring(item.Value):lower():find(searchKey, 1, true) or item.Source:lower():find(searchKey, 1, true) then
+                    table.insert(matched, item)
+                end
+            end
+        end
+
+        local maxRender = 120
+        local renderCount = math.min(#matched, maxRender)
+        for i = 1, renderCount do
+            local row = renderDataItem(matched[i], i)
+            row.Parent = DataScrollList
+        end
+
+        DataScrollList.CanvasSize = UDim2.new(0, 0, 0, renderCount * 56)
+        if #matched > maxRender then
+            DataStatusLabel.Text = string.format("Total Data: %d | Ditampilkan: %d dari %d entri (Gunakan Search untuk menyaring)", #SysScanner.GameData, renderCount, #matched)
+        else
+            DataStatusLabel.Text = string.format("Total Data: %d | Ditampilkan: %d entri", #SysScanner.GameData, #matched)
+        end
+    end
+
+    for i, tabInfo in ipairs(dataTabs) do
+        local btn = Instance.new("TextButton")
+        btn.Name = "DataTab_" .. tabInfo.Id
+        btn.Size = UDim2.new(0, 0, 1, 0)
+        btn.AutomaticSize = Enum.AutomaticSize.X
+        btn.BackgroundColor3 = (tabInfo.Id == currentDataFilter) and Color3.fromRGB(37, 99, 235) or Color3.fromRGB(26, 30, 42)
+        btn.Text = "  " .. tabInfo.Label .. "  "
+        btn.TextColor3 = Color3.fromRGB(240, 245, 255)
+        btn.TextSize = 11
+        btn.Font = Enum.Font.GothamMedium
+        btn.BorderSizePixel = 0
+        btn.LayoutOrder = i
+        btn.Parent = DataFilterBar
+
+        local tabCorner = Instance.new("UICorner")
+        tabCorner.CornerRadius = UDim.new(0, 5)
+        tabCorner.Parent = btn
+
+        dataFilterButtons[tabInfo.Id] = btn
+
+        btn.MouseButton1Click:Connect(function()
+            currentDataFilter = tabInfo.Id
+            for id, b in pairs(dataFilterButtons) do
+                b.BackgroundColor3 = (id == currentDataFilter) and Color3.fromRGB(37, 99, 235) or Color3.fromRGB(26, 30, 42)
+            end
+            refreshDataDisplay()
+        end)
+    end
+
+    DataSearchBox:GetPropertyChangedSignal("Text"):Connect(refreshDataDisplay)
+
+    DataScanBtn.MouseButton1Click:Connect(function()
+        task.spawn(function()
+            DataStatusLabel.Text = "[Scan] Sedang memindai seluruh data game..."
+            DataScanBtn.Text = "Memindai..."
+            DataScanBtn.AutoButtonColor = false
+
+            local ok, err = pcall(function()
+                return SysScanner.ScanGameData(function(entry)
+                    -- real-time callback
+                end)
+            end)
+
+            DataScanBtn.Text = "Scan Data"
+            DataScanBtn.AutoButtonColor = true
+
+            if ok then
+                showToast(string.format("Ditemukan %d data!", #SysScanner.GameData))
+                refreshDataDisplay()
+            else
+                DataStatusLabel.Text = "[Error] Gagal memindai: " .. tostring(err)
+                warn("[SysScanner] ScanGameData error:", err)
+                showToast("Gagal memindai!", true)
+            end
+        end)
+    end)
+
+    DataCopyAllBtn.MouseButton1Click:Connect(function()
+        local ok = SysScanner.ExportDataToClipboard(currentDataFilter)
+        if ok then
+            showToast("Semua data tersalin!")
+        else
+            showToast("Dicetak ke console!", true)
+        end
+    end)
+
+    DataSaveFileBtn.MouseButton1Click:Connect(function()
+        local ok = SysScanner.ExportDataToFile(nil, currentDataFilter)
+        if ok then
+            showToast("Tersimpan ke file!")
+        else
+            showToast("Gagal simpan file", true)
+        end
+    end)
+
+    -- Keybind toggle UI (RightShift)
+    UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if not gameProcessed and input.KeyCode == Enum.KeyCode.RightShift then
+            ScreenGui.Enabled = not ScreenGui.Enabled
+        end
+    end)
+
+    ScreenGui.Parent = parentGui
+    SysScanner.GuiInstance = ScreenGui
+
+    -- Jalankan scanner awal, game data scan, dan aktifkan spy secara terpisah
+    task.spawn(function()
+        pcall(function()
+            SysScanner.Scan()
+            refreshRemoteDisplay()
+        end)
+        task.spawn(function()
+            pcall(function()
+                SysScanner.ScanGameData()
+                refreshDataDisplay()
+            end)
+        end)
+        pcall(function()
+            SysScanner.StartSpy()
+        end)
+    end)
+
+    return ScreenGui
+end
+
+-- ==============================================================================
+-- [7] AUTO RUN & INITIALIZATION
+-- ==============================================================================
+
+local success, gui = pcall(function()
+    return SysScanner.CreateGUI()
+end)
+
+if not success then
+    warn("[SysScanner] Gagal membuat GUI, menjalankan mode fallback console.")
+    SysScanner.Scan()
+    SysScanner.ScanGameData()
+    SysScanner.StartSpy()
+end
+
+print([[
+======================================================
+  [SysScanner v3.0 | All-In-One Game Explorer]
+  - Tab 1: 🔍 Remote Scanner
+  - Tab 2: 🕵️ RemoteSpy (FireServer & InvokeServer)
+  - Tab 3: 📊 Game Data (Player, ReplicatedStorage, Workspace)
+  - Tekan 'RightShift' untuk Hide/Show UI
+  - Akses script: _G.SysScanner
+======================================================
+]])
+
+return SysScanner
