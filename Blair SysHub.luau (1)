@@ -1,4 +1,4 @@
---[[ SysHub - Blair v6.9.47 (Fix infinite stamina sprint - PC + Mobile) ]]
+--[[ SysHub - Blair v6.9.47 (Fix infinite stamina sprint - PC + Mobile, sprint-only trigger) ]]
 print("[SysHub] Starting...")
 local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
 print("[SysHub] WindUI loaded")
@@ -1919,7 +1919,7 @@ local function disablePromptWatcher()
 end
 
 -- ============================================================
--- Infinite Stamina (v6.9.47 — Heartbeat + grace period reset)
+-- Infinite Stamina (v6.9.47 — sprint-only trigger)
 -- ============================================================
 local StaminaNumberValues, StaminaAttrTargets = {}, {}
 local LastStaminaScan = 0
@@ -2120,22 +2120,15 @@ task.spawn(function()
 end)
 
 -- ============================================================
--- Sprint state check (PC + Mobile compatible)
--- Prioritas: Attribute game > Keyboard > Touch
+-- Sprint state check — HANYA aktif saat tombol sprint ditekan
 -- ============================================================
 local function isSprintActive()
-    -- PRIORITY 1: Attribute resmi game (paling reliable, PC & HP)
+    -- PRIORITY 1: Attribute IsSprinting (game set HANYA saat sprint ditekan)
     if LocalPlayer:GetAttribute("IsSprinting") == true then
         return true
     end
 
-    -- PRIORITY 2: Di HP, kalau game bilang player bergerak → anggap sprint
-    if UserInputService.TouchEnabled
-        and LocalPlayer:GetAttribute("IsMoving") == true then
-        return true
-    end
-
-    -- PRIORITY 3: PC fallback keyboard
+    -- PRIORITY 2: Keyboard PC
     if UserInputService.KeyboardEnabled then
         if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)
             or UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then
@@ -2143,7 +2136,7 @@ local function isSprintActive()
         end
     end
 
-    -- PRIORITY 4: HP fallback tombol sprint UI
+    -- PRIORITY 3: Tombol sprint UI di HP
     if UserInputService.TouchEnabled
         and MobileSprintButton and MobileSprintButton.Parent then
         local ok, touches = pcall(function()
@@ -2167,7 +2160,8 @@ local function isSprintActive()
 end
 
 -- ============================================================
--- v6.9.47: SINGLE Heartbeat handler
+-- Heartbeat: Infinite stamina + sprint boost
+-- HANYA aktif saat sprint ditekan
 -- ============================================================
 local lastSprintDetectedTick = 0
 
@@ -2181,12 +2175,7 @@ RunService.Heartbeat:Connect(function()
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then return end
 
-    -- 1. Infinite: force refill stamina SETIAP FRAME
-    if infiniteStaminaEnabled then
-        forceStamina()
-    end
-
-    -- 2. Detect sprint
+    -- 1. Detect sprint (hanya true kalau tombol sprint benar-benar ditekan)
     local sprinting = false
     if infiniteStaminaEnabled then
         sprinting = isSprintActive()
@@ -2195,8 +2184,14 @@ RunService.Heartbeat:Connect(function()
         end
     end
 
+    -- 2. Infinite stamina: refill stamina HANYA saat sprint ditekan
+    if infiniteStaminaEnabled and sprinting then
+        forceStamina()
+    end
+
     -- 3. WalkSpeed logic
     if infiniteStaminaEnabled and sprinting then
+        -- Sprint boost — hanya saat sprint ditekan
         local sprintWS = capturedSprintSpeed or (originalWalkSpeed and originalWalkSpeed * 1.5) or 19
         if customWalkSpeedEnabled and targetWalkSpeed > sprintWS then
             sprintWS = targetWalkSpeed
@@ -2205,10 +2200,13 @@ RunService.Heartbeat:Connect(function()
             hum.WalkSpeed = sprintWS
         end
     elseif customWalkSpeedEnabled then
+        -- Custom WalkSpeed ON (independen dari sprint)
         if hum.WalkSpeed ~= targetWalkSpeed then
             hum.WalkSpeed = targetWalkSpeed
         end
     elseif infiniteStaminaEnabled then
+        -- Infinite ON, sprint TIDAK ditekan → kembalikan ke kecepatan normal
+        -- Grace period 1 detik untuk hindari flicker
         if tick() - lastSprintDetectedTick > 1.0 then
             if originalWalkSpeed and hum.WalkSpeed > originalWalkSpeed + 0.5 then
                 hum.WalkSpeed = originalWalkSpeed
