@@ -1,4 +1,4 @@
---[[ SysHub - Blair v6.9.37 (Spirit Box: check all players' spirit box) + Sprint Fix v3 ]]
+--[[ SysHub - Blair v6.9.37 (Spirit Box check all) + Sprint Fix v4 ]]
 print("[SysHub] Starting...")
 local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
 print("[SysHub] WindUI loaded")
@@ -437,9 +437,7 @@ local function detectEvidenceFromString(s)
     return nil
 end
 
--- ============================================================
 -- Ghost Orb
--- ============================================================
 local function fireGhostOrbEvidence(reason)
     if not autoEvidenceDetectActive then
         return
@@ -586,9 +584,7 @@ if FreezingObjectiveRemote and FreezingObjectiveRemote:IsA("RemoteEvent") then
     end)
 end
 
--- ============================================================
 -- UV Detection
--- ============================================================
 local function fireUVEvidence(reason)
     if not autoEvidenceDetectActive then
         return
@@ -637,50 +633,30 @@ local function instanceVisible(v, depth)
         return false
     end
     if v:IsA("BasePart") then
-        if v.Transparency < 1 then
-            return true
-        end
+        if v.Transparency < 1 then return true end
     elseif v:IsA("Decal") or v:IsA("Texture") then
-        if v.Transparency < 1 then
-            return true
-        end
+        if v.Transparency < 1 then return true end
     elseif v:IsA("SurfaceGui") or v:IsA("BillboardGui") then
-        if v.Enabled then
-            return true
-        end
+        if v.Enabled then return true end
     elseif v:IsA("ImageLabel") or v:IsA("ImageButton") then
-        if v.ImageTransparency < 1 and v.Visible then
-            return true
-        end
+        if v.ImageTransparency < 1 and v.Visible then return true end
     elseif v:IsA("TextLabel") or v:IsA("TextButton") or v:IsA("TextBox") then
-        if v.TextTransparency < 1 and v.Visible then
-            return true
-        end
+        if v.TextTransparency < 1 and v.Visible then return true end
     elseif v:IsA("ParticleEmitter") or v:IsA("PointLight") or v:IsA("SpotLight") or v:IsA("SurfaceLight") then
-        if v.Enabled then
-            return true
-        end
+        if v.Enabled then return true end
     elseif v:IsA("Beam") or v:IsA("Trail") then
-        if v.Enabled then
-            return true
-        end
+        if v.Enabled then return true end
     elseif v:IsA("BoolValue") then
-        if v.Value == true then
-            return true
-        end
+        if v.Value == true then return true end
     end
     for _, d in ipairs(v:GetDescendants()) do
-        if instanceVisible(d, depth + 1) then
-            return true
-        end
+        if instanceVisible(d, depth + 1) then return true end
     end
     return false
 end
 
 local function checkUVInContainer(root)
-    if not root or uvEvidenceFired then
-        return
-    end
+    if not root or uvEvidenceFired then return end
     for _, d in ipairs(root:GetDescendants()) do
         if matchesUVName(d.Name) and not isInsideToolOrCharacter(d) then
             if instanceVisible(d) then
@@ -693,16 +669,11 @@ end
 
 task.spawn(function()
     local map = Workspace:WaitForChild("Map", 30)
-    if not map then
-        return
-    end
+    if not map then return end
     local prints = map:WaitForChild("Prints", 30)
     if prints then
-        print("[SysHub] Hooked Map.Prints for UV detection")
         prints.DescendantAdded:Connect(function(d)
-            if not autoEvidenceDetectActive or uvEvidenceFired then
-                return
-            end
+            if not autoEvidenceDetectActive or uvEvidenceFired then return end
             task.wait(0.05)
             if matchesUVName(d.Name) and instanceVisible(d) then
                 fireUVEvidence("Map.Prints new: " .. d.Name)
@@ -718,9 +689,7 @@ task.spawn(function()
             local map = Workspace:FindFirstChild("Map")
             if map then
                 local prints = map:FindFirstChild("Prints")
-                if prints then
-                    checkUVInContainer(prints)
-                end
+                if prints then checkUVInContainer(prints) end
             end
         end
     end
@@ -737,12 +706,8 @@ end)
 
 local uvLightToolsHooked = setmetatable({}, {__mode = "k"})
 local function hookUVLightTool(t)
-    if not t or uvLightToolsHooked[t] then
-        return
-    end
-    if not t:IsA("Tool") or t.Name ~= "UV Light" then
-        return
-    end
+    if not t or uvLightToolsHooked[t] then return end
+    if not t:IsA("Tool") or t.Name ~= "UV Light" then return end
     uvLightToolsHooked[t] = true
     pcall(function()
         t.Activated:Connect(function()
@@ -750,9 +715,7 @@ local function hookUVLightTool(t)
             if autoEvidenceDetectActive and not uvEvidenceFired then
                 local map = Workspace:FindFirstChild("Map")
                 local prints = map and map:FindFirstChild("Prints")
-                if prints then
-                    checkUVInContainer(prints)
-                end
+                if prints then checkUVInContainer(prints) end
             end
         end)
     end)
@@ -760,13 +723,9 @@ end
 
 task.spawn(function()
     local function checkContainer(root)
-        if not root then
-            return
-        end
+        if not root then return end
         for _, v in ipairs(root:GetChildren()) do
-            if v:IsA("Tool") and v.Name == "UV Light" then
-                hookUVLightTool(v)
-            end
+            if v:IsA("Tool") and v.Name == "UV Light" then hookUVLightTool(v) end
         end
         root.ChildAdded:Connect(function(v)
             if v:IsA("Tool") and v.Name == "UV Light" then
@@ -777,9 +736,7 @@ task.spawn(function()
     end
     local bp = LocalPlayer:WaitForChild("Backpack", 30)
     checkContainer(bp)
-    if LocalPlayer.Character then
-        checkContainer(LocalPlayer.Character)
-    end
+    if LocalPlayer.Character then checkContainer(LocalPlayer.Character) end
     LocalPlayer.CharacterAdded:Connect(function(c)
         task.wait(0.5)
         checkContainer(c)
@@ -788,17 +745,12 @@ end)
 
 if UVPartRemote and UVPartRemote:IsA("RemoteEvent") then
     UVPartRemote.OnClientEvent:Connect(function(...)
-        if not autoEvidenceDetectActive then
-            return
-        end
+        if not autoEvidenceDetectActive then return end
         fireUVEvidence("UVPartInteraction remote")
     end)
 end
 
--- ============================================================
 -- SPIRIT BOX
--- ============================================================
-
 local SPIRITBOX_QUESTION_TEXTS_NORM = {
     ["where are you"] = true,
     ["are you close"] = true,
@@ -806,9 +758,7 @@ local SPIRITBOX_QUESTION_TEXTS_NORM = {
 }
 
 local function normalizeForQuestionCheck(s)
-    if type(s) ~= "string" then
-        return nil
-    end
+    if type(s) ~= "string" then return nil end
     local low = s:lower()
     low = low:gsub("^%s+", ""):gsub("%s+$", "")
     low = low:gsub("[%?%!%.%,;:]+$", "")
@@ -819,12 +769,8 @@ end
 
 local function isSpiritBoxQuestionText(txt)
     local norm = normalizeForQuestionCheck(txt)
-    if not norm then
-        return false
-    end
-    if SPIRITBOX_QUESTION_TEXTS_NORM[norm] then
-        return true
-    end
+    if not norm then return false end
+    if SPIRITBOX_QUESTION_TEXTS_NORM[norm] then return true end
     return false
 end
 
@@ -882,32 +828,19 @@ local SPIRIT_KEYWORDS = {
     ["why"] = true, ["what"] = true, ["where"] = true, ["who"] = true, ["how"] = true;
 }
 
-local NOISE_PATH_FRAGMENTS = {
-    "ToolBarGui",
-    "ItemPreview",
-    "ToolViewport",
-    "ZoneBillboard",
-    "SpawnPointBillboard",
-}
-
-local NOISE_NAME_EXACT = {
-    "ButtonA", "ButtonB", "ButtonC", "RoomName",
-}
+local NOISE_PATH_FRAGMENTS = {"ToolBarGui", "ItemPreview", "ToolViewport", "ZoneBillboard", "SpawnPointBillboard"}
+local NOISE_NAME_EXACT = {"ButtonA", "ButtonB", "ButtonC", "RoomName"}
 
 local function isNoiseSource(v)
     local directName = v.Name or ""
     for _, nm in ipairs(NOISE_NAME_EXACT) do
-        if directName == nm then
-            return true
-        end
+        if directName == nm then return true end
     end
     local p, depth = v, 0
     while p and depth < 12 do
         local n = p.Name or ""
         for _, frag in ipairs(NOISE_PATH_FRAGMENTS) do
-            if n == frag or n:find(frag, 1, true) then
-                return true
-            end
+            if n == frag or n:find(frag, 1, true) then return true end
         end
         p = p.Parent
         depth = depth + 1
@@ -918,18 +851,14 @@ end
 local function extractStrings(v, depth, out)
     depth = depth or 0
     out = out or {}
-    if depth > 4 then
-        return out
-    end
+    if depth > 4 then return out end
     local t = type(v)
     if t == "string" then
         table.insert(out, v)
     elseif t == "table" then
         for k, vv in pairs(v) do
             extractStrings(vv, depth + 1, out)
-            if type(k) == "string" then
-                extractStrings(k, depth + 1, out)
-            end
+            if type(k) == "string" then extractStrings(k, depth + 1, out) end
         end
     elseif typeof(v) == "Instance" then
         if v:IsA("StringValue") then
@@ -942,59 +871,33 @@ local function extractStrings(v, depth, out)
 end
 
 local function sanitizeSpiritString(s)
-    if type(s) ~= "string" then
-        return nil
-    end
+    if type(s) ~= "string" then return nil end
     s = s:gsub("^%s+", ""):gsub("%s+$", "")
     s = s:gsub("^[%p]+", ""):gsub("[%p]+$", "")
     s = s:gsub("%s+", " ")
     s = s:gsub("^%s+", ""):gsub("%s+$", "")
-    if #s < 2 then
-        return nil
-    end
+    if #s < 2 then return nil end
     return s
 end
 
 local function testSpiritString(s)
-    if type(s) ~= "string" then
-        return false
-    end
+    if type(s) ~= "string" then return false end
     local cleaned = sanitizeSpiritString(s)
-    if not cleaned then
-        return false
-    end
-    if #cleaned > 60 then
-        return false
-    end
-    if cleaned:match("^[%d%.%s%-]+$") then
-        return false
-    end
+    if not cleaned then return false end
+    if #cleaned > 60 then return false end
+    if cleaned:match("^[%d%.%s%-]+$") then return false end
     local low = cleaned:lower()
-    if SPIRITBOX_IGNORE[low] then
-        return false
-    end
-    if low:find("[%[%]{}<>@#%$%%%^&%*_=+|\\/]") then
-        return false
-    end
-    if low:find("spiritbox") or low:find("spirit box") then
-        return false
-    end
-    if SPIRIT_KEYWORDS[low] then
-        return true
-    end
+    if SPIRITBOX_IGNORE[low] then return false end
+    if low:find("[%[%]{}<>@#%$%%%^&%*_=+|\\/]") then return false end
+    if low:find("spiritbox") or low:find("spirit box") then return false end
+    if SPIRIT_KEYWORDS[low] then return true end
     local nospace = low:gsub("%s+", "")
-    if SPIRIT_KEYWORDS[nospace] then
-        return true
-    end
+    if SPIRIT_KEYWORDS[nospace] then return true end
     local lettersOnly = low:gsub("[^%a]", "")
-    if #lettersOnly >= 2 and #lettersOnly <= 20 and SPIRIT_KEYWORDS[lettersOnly] then
-        return true
-    end
+    if #lettersOnly >= 2 and #lettersOnly <= 20 and SPIRIT_KEYWORDS[lettersOnly] then return true end
     for kw in pairs(SPIRIT_KEYWORDS) do
         if #kw >= 4 and kw:find(" ", 1, true) then
-            if low:find(kw, 1, true) then
-                return true
-            end
+            if low:find(kw, 1, true) then return true end
         end
     end
     for kw in pairs(SPIRIT_KEYWORDS) do
@@ -1002,17 +905,12 @@ local function testSpiritString(s)
             local ok, found = pcall(function()
                 return low:find("%f[%a]" .. kw .. "%f[%A]")
             end)
-            if ok and found then
-                return true
-            end
+            if ok and found then return true end
         end
     end
     return false
 end
 
--- ============================================================
--- Equipped gate
--- ============================================================
 local lastSpiritBoxEquippedTime = 0
 
 local function isSpiritBoxEquippedByAnyone()
@@ -1043,9 +941,7 @@ end
 
 local SPIRITBOX_GRACE_PERIOD = 5
 local function isSpiritBoxActive()
-    if isSpiritBoxEquippedByAnyone() then
-        return true
-    end
+    if isSpiritBoxEquippedByAnyone() then return true end
     if lastSpiritBoxEquippedTime > 0 and (tick() - lastSpiritBoxEquippedTime) < SPIRITBOX_GRACE_PERIOD then
         return true
     end
@@ -1064,9 +960,7 @@ local function sourceMatches(v)
     while p and depth < 6 do
         local n = (p.Name or ""):lower()
         for _, kw in ipairs(SOURCE_HINTS) do
-            if n == kw or n:find(kw, 1, true) then
-                return true
-            end
+            if n == kw or n:find(kw, 1, true) then return true end
         end
         p = p.Parent
         depth = depth + 1
@@ -1075,9 +969,7 @@ local function sourceMatches(v)
 end
 
 local function handleSpiritBoxEvent(sourceName, ...)
-    if not autoEvidenceDetectActive then
-        return
-    end
+    if not autoEvidenceDetectActive then return end
     if not isSpiritBoxActive() then
         print("[SysHub][Spirit] Blocked (no Spirit Box equipped anywhere): " .. tostring(sourceName))
         return
@@ -1088,9 +980,7 @@ local function handleSpiritBoxEvent(sourceName, ...)
         extractStrings(a, 0, allStrings)
     end
     for _, s in ipairs(allStrings) do
-        if isSpiritBoxQuestionText(s) then
-            return
-        end
+        if isSpiritBoxQuestionText(s) then return end
         if testSpiritString(s) then
             print("[SysHub] SpiritBox [" .. tostring(sourceName) .. "] -> " .. s)
             addDetectedEvidence("Spirit Box")
@@ -1100,7 +990,6 @@ local function handleSpiritBoxEvent(sourceName, ...)
 end
 
 local hookedSpiritSounds = setmetatable({}, {__mode = "k"})
-
 local SPIRIT_RESPONSE_WHITELIST = {
     "ghosttalk", "ghost_talk", "ghost talk",
     "ghostvoice", "ghost_voice", "ghost voice",
@@ -1111,14 +1000,10 @@ local SPIRIT_RESPONSE_WHITELIST = {
 }
 
 local function isGhostResponseSound(s)
-    if not s or not s:IsA("Sound") then
-        return false
-    end
+    if not s or not s:IsA("Sound") then return false end
     local n = (s.Name or ""):lower()
     for _, hint in ipairs(SPIRIT_RESPONSE_WHITELIST) do
-        if n:find(hint, 1, true) then
-            return true
-        end
+        if n:find(hint, 1, true) then return true end
     end
     return false
 end
@@ -1134,22 +1019,16 @@ local SPIRIT_TOOL_SFX_EXCLUDE = {
 }
 
 local function isExcludedToolSFX(name)
-    if type(name) ~= "string" or #name == 0 then
-        return false
-    end
+    if type(name) ~= "string" or #name == 0 then return false end
     local n = name:lower()
     for _, ex in ipairs(SPIRIT_TOOL_SFX_EXCLUDE) do
-        if n == ex then
-            return true
-        end
+        if n == ex then return true end
     end
     return false
 end
 
 local function fireSpiritBoxFromSound(s)
-    if not autoEvidenceDetectActive then
-        return
-    end
+    if not autoEvidenceDetectActive then return end
     if not isSpiritBoxActive() then
         print("[SysHub][Spirit] Sound blocked (no Spirit Box equipped anywhere): " .. s.Name)
         return
@@ -1167,69 +1046,44 @@ local function fireSpiritBoxFromSound(s)
 end
 
 local function hookSpiritSound(s)
-    if not s or not s:IsA("Sound") or hookedSpiritSounds[s] then
-        return
-    end
+    if not s or not s:IsA("Sound") or hookedSpiritSounds[s] then return end
     hookedSpiritSounds[s] = true
-    print("[SysHub][Spirit] Hooked sound: " .. s:GetFullName() .. " (name='" .. s.Name .. "')")
     pcall(function()
         s:GetPropertyChangedSignal("Playing"):Connect(function()
-            if s.Playing then
-                print("[SysHub][Spirit] Sound PLAY: " .. s.Name)
-                fireSpiritBoxFromSound(s)
-            end
+            if s.Playing then fireSpiritBoxFromSound(s) end
         end)
     end)
     pcall(function()
         s.Played:Connect(function()
-            print("[SysHub][Spirit] Sound PLAYED: " .. s.Name)
             fireSpiritBoxFromSound(s)
         end)
     end)
 end
 
 local function scanSpiritSounds(root)
-    if not root then
-        return
-    end
-    local count = 0
+    if not root then return end
     for _, d in ipairs(root:GetDescendants()) do
-        if d:IsA("Sound") then
-            hookSpiritSound(d)
-            count = count + 1
-        end
+        if d:IsA("Sound") then hookSpiritSound(d) end
     end
-    print("[SysHub][Spirit] Scanned " .. count .. " sounds in " .. (root:GetFullName()):sub(1, 80))
     root.DescendantAdded:Connect(function(d)
-        if d:IsA("Sound") then
-            hookSpiritSound(d)
-        end
+        if d:IsA("Sound") then hookSpiritSound(d) end
     end)
 end
 
 task.spawn(function()
     local map = Workspace:WaitForChild("Map", 30)
-    if not map then
-        return
-    end
+    if not map then return end
     local items = map:FindFirstChild("Items")
     if items then
         local sb = items:FindFirstChild("Spirit Box") or items:FindFirstChild("SpiritBox")
-        if sb then
-            scanSpiritSounds(sb)
-            print("[SysHub][Spirit] Scanned Map.Items.Spirit Box")
-        end
+        if sb then scanSpiritSounds(sb) end
     end
 end)
 
 local function scanPlayerForSpiritBox(plr)
-    if not plr then
-        return
-    end
+    if not plr then return end
     local function scanChar(ch)
-        if not ch then
-            return
-        end
+        if not ch then return end
         for _, t in ipairs(ch:GetChildren()) do
             if t:IsA("Tool") and (t.Name == "Spirit Box" or t.Name == "SpiritBox") then
                 scanSpiritSounds(t)
@@ -1242,9 +1096,7 @@ local function scanPlayerForSpiritBox(plr)
             end
         end)
     end
-    if plr.Character then
-        scanChar(plr.Character)
-    end
+    if plr.Character then scanChar(plr.Character) end
     plr.CharacterAdded:Connect(function(ch)
         task.wait(1)
         scanChar(ch)
@@ -1266,9 +1118,7 @@ task.spawn(function()
                     if t:IsA("Tool") and (t.Name == "Spirit Box" or t.Name == "SpiritBox") then
                         if not hookedSpiritSounds[t] then
                             for _, d in ipairs(t:GetDescendants()) do
-                                if d:IsA("Sound") then
-                                    hookSpiritSound(d)
-                                end
+                                if d:IsA("Sound") then hookSpiritSound(d) end
                             end
                             hookedSpiritSounds[t] = true
                         end
@@ -1280,22 +1130,12 @@ task.spawn(function()
 end)
 
 local hookedButtons = setmetatable({}, {__mode = "k"})
-
 local function hookSpiritBoxButton(btn)
-    if not btn or hookedButtons[btn] then
-        return
-    end
-    if not btn:IsA("TextButton") and not btn:IsA("ImageButton") then
-        return
-    end
+    if not btn or hookedButtons[btn] then return end
+    if not btn:IsA("TextButton") and not btn:IsA("ImageButton") then return end
     hookedButtons[btn] = true
     pcall(function()
         btn.Activated:Connect(function()
-            print("[SysHub][Spirit] Question clicked: " .. btn:GetFullName())
-        end)
-    end)
-    pcall(function()
-        btn.MouseButton1Click:Connect(function()
             print("[SysHub][Spirit] Question clicked: " .. btn:GetFullName())
         end)
     end)
@@ -1303,23 +1143,17 @@ end
 
 task.spawn(function()
     local map = Workspace:WaitForChild("Map", 30)
-    if not map then
-        return
-    end
+    if not map then return end
     local items = map:FindFirstChild("Items")
     if items then
         local sb = items:FindFirstChild("Spirit Box") or items:FindFirstChild("SpiritBox")
         if sb then
             for _, d in ipairs(sb:GetDescendants()) do
-                if d:IsA("TextButton") or d:IsA("ImageButton") then
-                    hookSpiritBoxButton(d)
-                end
+                if d:IsA("TextButton") or d:IsA("ImageButton") then hookSpiritBoxButton(d) end
             end
             sb.DescendantAdded:Connect(function(d)
                 task.wait(0.05)
-                if d:IsA("TextButton") or d:IsA("ImageButton") then
-                    hookSpiritBoxButton(d)
-                end
+                if d:IsA("TextButton") or d:IsA("ImageButton") then hookSpiritBoxButton(d) end
             end)
         end
     end
@@ -1327,16 +1161,13 @@ end)
 
 task.spawn(function()
     local board = Workspace:WaitForChild("Spirit Board", 20)
-    if not board then
-        return
-    end
+    if not board then return end
     local uiQuestion = board:FindFirstChild("UIQuestion")
     if uiQuestion and uiQuestion:IsA("RemoteEvent") and not hookedRemotes[uiQuestion] then
         hookedRemotes[uiQuestion] = true
         uiQuestion.OnClientEvent:Connect(function(...)
             handleSpiritBoxEvent("SpiritBoard:UIQuestion", ...)
         end)
-        print("[SysHub] Hooked Spirit Board.UIQuestion")
     end
     local activated = board:FindFirstChild("ActivatedStateChanged")
     if activated and activated:IsA("RemoteEvent") and not hookedRemotes[activated] then
@@ -1348,67 +1179,38 @@ task.spawn(function()
 end)
 
 local watchedFloatingTexts = setmetatable({}, {__mode = "k"})
-
 local function isFloatingText3D(v)
     local p = v
     local hasGui = false
     while p do
-        if p:IsA("PlayerGui") then
-            return false
-        end
-        if p:IsA("BillboardGui") or p:IsA("SurfaceGui") then
-            hasGui = true
-        end
-        if p == Workspace then
-            return hasGui
-        end
+        if p:IsA("PlayerGui") then return false end
+        if p:IsA("BillboardGui") or p:IsA("SurfaceGui") then hasGui = true end
+        if p == Workspace then return hasGui end
         p = p.Parent
     end
     return false
 end
 
 local function watchFloatingText(v)
-    if not v or watchedFloatingTexts[v] then
-        return
-    end
-    if not v:IsA("TextLabel") and not v:IsA("TextButton") and not v:IsA("TextBox") then
-        return
-    end
+    if not v or watchedFloatingTexts[v] then return end
+    if not v:IsA("TextLabel") and not v:IsA("TextButton") and not v:IsA("TextBox") then return end
     watchedFloatingTexts[v] = true
-
     local function checkText(txt)
-        if type(txt) ~= "string" or #txt == 0 then
-            return
-        end
-        if isNoiseSource(v) then
-            return
-        end
-        if isSpiritBoxQuestionText(txt) then
-            return
-        end
+        if type(txt) ~= "string" or #txt == 0 then return end
+        if isNoiseSource(v) then return end
+        if isSpiritBoxQuestionText(txt) then return end
         local cleaned = sanitizeSpiritString(txt)
-        if not cleaned then
-            return
-        end
-        if not testSpiritString(cleaned) then
-            return
-        end
+        if not cleaned then return end
+        if not testSpiritString(cleaned) then return end
         if isFloatingText3D(v) or sourceMatches(v) then
-            print("[SysHub][Spirit] Text candidate: '" .. cleaned .. "' @ " .. v:GetFullName())
             handleSpiritBoxEvent("Text:" .. v.Name, txt)
         end
     end
-
-    if v.Text and #v.Text > 0 then
-        pcall(checkText, v.Text)
-    end
+    if v.Text and #v.Text > 0 then pcall(checkText, v.Text) end
     task.spawn(function()
         task.wait(0.4)
-        if v.Parent and v.Text and #v.Text > 0 then
-            pcall(checkText, v.Text)
-        end
+        if v.Parent and v.Text and #v.Text > 0 then pcall(checkText, v.Text) end
     end)
-
     pcall(function()
         v:GetPropertyChangedSignal("Text"):Connect(function()
             checkText(v.Text)
@@ -1417,11 +1219,8 @@ local function watchFloatingText(v)
 end
 
 local scannedRoots = setmetatable({}, {__mode = "k"})
-
 local function scanAllTexts(root)
-    if not root then
-        return
-    end
+    if not root then return end
     for _, v in ipairs(root:GetDescendants()) do
         if v:IsA("TextLabel") or v:IsA("TextButton") or v:IsA("TextBox") then
             watchFloatingText(v)
@@ -1443,10 +1242,7 @@ end
 task.spawn(function()
     scanAllTexts(Workspace)
     local pg = LocalPlayer:WaitForChild("PlayerGui", 15)
-    if pg then
-        scanAllTexts(pg)
-    end
-    print("[SysHub] Watching floating TextLabels")
+    if pg then scanAllTexts(pg) end
 end)
 
 if TypewriteRemote and TypewriteRemote:IsA("RemoteEvent") and not hookedRemotes[TypewriteRemote] then
@@ -1471,20 +1267,14 @@ if PrintStringOnClientRemote and PrintStringOnClientRemote:IsA("RemoteEvent") an
 end
 
 task.spawn(function()
-    if not Remotes then
-        return
-    end
+    if not Remotes then return end
     local HINT_NAMES = {
         "ghostresponse", "spiritresponse", "spirittext", "ghosttext",
         "responsetext", "spiritvoice",
     }
     local function tryHook(r)
-        if not r or not r:IsA("RemoteEvent") then
-            return
-        end
-        if hookedRemotes[r] then
-            return
-        end
+        if not r or not r:IsA("RemoteEvent") then return end
+        if hookedRemotes[r] then return end
         local n = r.Name:lower()
         for _, hint in ipairs(HINT_NAMES) do
             if n == hint then
@@ -1492,14 +1282,11 @@ task.spawn(function()
                 r.OnClientEvent:Connect(function(...)
                     handleSpiritBoxEvent("Remote:" .. r.Name, ...)
                 end)
-                print("[SysHub] Hooked response remote: " .. r.Name)
                 return
             end
         end
     end
-    for _, r in ipairs(Remotes:GetChildren()) do
-        tryHook(r)
-    end
+    for _, r in ipairs(Remotes:GetChildren()) do tryHook(r) end
     Remotes.ChildAdded:Connect(function(r)
         task.wait(0.05)
         tryHook(r)
@@ -1507,17 +1294,13 @@ task.spawn(function()
 end)
 
 local function isSpiritBoxTool(t)
-    if not t or not t:IsA("Tool") then
-        return false
-    end
+    if not t or not t:IsA("Tool") then return false end
     local n = t.Name:lower()
     return n == "spirit box" or n == "spiritbox"
 end
 
 local function hookSpiritBoxTool(t)
-    if not t or hookedTools[t] then
-        return
-    end
+    if not t or hookedTools[t] then return end
     hookedTools[t] = true
     for _, v in ipairs(t:GetDescendants()) do
         if v:IsA("RemoteEvent") then
@@ -1541,9 +1324,7 @@ task.spawn(function()
             local items = map:FindFirstChild("Items")
             if items then
                 for _, v in ipairs(items:GetDescendants()) do
-                    if isSpiritBoxTool(v) then
-                        hookSpiritBoxTool(v)
-                    end
+                    if isSpiritBoxTool(v) then hookSpiritBoxTool(v) end
                 end
             end
         end
@@ -1551,17 +1332,13 @@ task.spawn(function()
             local bp = plr:FindFirstChild("Backpack")
             if bp then
                 for _, v in ipairs(bp:GetChildren()) do
-                    if isSpiritBoxTool(v) then
-                        hookSpiritBoxTool(v)
-                    end
+                    if isSpiritBoxTool(v) then hookSpiritBoxTool(v) end
                 end
             end
             local ch = plr.Character
             if ch then
                 for _, v in ipairs(ch:GetChildren()) do
-                    if isSpiritBoxTool(v) then
-                        hookSpiritBoxTool(v)
-                    end
+                    if isSpiritBoxTool(v) then hookSpiritBoxTool(v) end
                 end
             end
         end
@@ -1569,24 +1346,16 @@ task.spawn(function()
 end)
 
 local function hookBoolValue(bv, evidence)
-    if not bv or not bv:IsA("BoolValue") or hookedValueObjects[bv] then
-        return
-    end
+    if not bv or not bv:IsA("BoolValue") or hookedValueObjects[bv] then return end
     hookedValueObjects[bv] = true
-    if bv.Value then
-        addDetectedEvidence(evidence)
-    end
+    if bv.Value then addDetectedEvidence(evidence) end
     bv:GetPropertyChangedSignal("Value"):Connect(function()
-        if bv.Value then
-            addDetectedEvidence(evidence)
-        end
+        if bv.Value then addDetectedEvidence(evidence) end
     end)
 end
 
 local function hookNumberValue(nv, callback)
-    if not nv or not nv:IsA("NumberValue") or hookedValueObjects[nv] then
-        return
-    end
+    if not nv or not nv:IsA("NumberValue") or hookedValueObjects[nv] then return end
     hookedValueObjects[nv] = true
     nv:GetPropertyChangedSignal("Value"):Connect(function()
         callback(nv.Value)
@@ -1594,9 +1363,7 @@ local function hookNumberValue(nv, callback)
 end
 
 local function hookEMF(t)
-    if not t or hookedTools[t] then
-        return
-    end
+    if not t or hookedTools[t] then return end
     hookedTools[t] = true
     for _, v in ipairs(t:GetDescendants()) do
         if v:IsA("BoolValue") then
@@ -1625,27 +1392,21 @@ local function hookEMF(t)
 end
 
 local function hookThermometer(t)
-    if not t or hookedTools[t] then
-        return
-    end
+    if not t or hookedTools[t] then return end
     hookedTools[t] = true
     for _, v in ipairs(t:GetDescendants()) do
         if v:IsA("BoolValue") and v.Name:lower():find("freez") then
             hookBoolValue(v, "Freezing Temperatures")
         elseif v:IsA("NumberValue") and (v.Name:lower():find("temp") or v.Name:lower():find("freez")) then
             hookNumberValue(v, function(val)
-                if typeof(val) == "number" then
-                    refreshAutoStatusUI()
-                end
+                if typeof(val) == "number" then refreshAutoStatusUI() end
             end)
         end
     end
 end
 
 local function hookBook(t)
-    if not t or hookedTools[t] then
-        return
-    end
+    if not t or hookedTools[t] then return end
     hookedTools[t] = true
     for _, v in ipairs(t:GetDescendants()) do
         if v:IsA("BoolValue") and v.Name:lower():find("writ") then
@@ -1662,102 +1423,60 @@ local function hookBook(t)
 end
 
 local function hookUVLight(t)
-    if not t or hookedTools[t] then
-        return
-    end
+    if not t or hookedTools[t] then return end
     hookedTools[t] = true
 end
 
 local sniffed = setmetatable({}, {__mode = "k"})
-
 local function sniffInstance(v)
-    if not v or sniffed[v] then
-        return
-    end
+    if not v or sniffed[v] then return end
     if v:IsA("BoolValue") then
-        if hookedValueObjects[v] then
-            sniffed[v] = true
-            return
-        end
+        if hookedValueObjects[v] then sniffed[v] = true; return end
         sniffed[v] = true
         hookedValueObjects[v] = true
         local function check()
             if v.Value then
                 local ev = detectEvidenceFromString(v.Name)
-                if not ev and v.Parent then
-                    ev = detectEvidenceFromString(v.Parent.Name)
-                end
-                if ev then
-                    addDetectedEvidence(ev)
-                end
+                if not ev and v.Parent then ev = detectEvidenceFromString(v.Parent.Name) end
+                if ev then addDetectedEvidence(ev) end
             end
         end
-        if v.Value then
-            check()
-        end
+        if v.Value then check() end
         v:GetPropertyChangedSignal("Value"):Connect(check)
     elseif v:IsA("StringValue") then
-        if hookedValueObjects[v] then
-            sniffed[v] = true
-            return
-        end
+        if hookedValueObjects[v] then sniffed[v] = true; return end
         sniffed[v] = true
         hookedValueObjects[v] = true
         local function check()
             local ev = detectEvidenceFromString(v.Value) or detectEvidenceFromString(v.Name)
-            if ev then
-                addDetectedEvidence(ev)
-            end
+            if ev then addDetectedEvidence(ev) end
         end
-        if v.Value ~= "" then
-            check()
-        end
+        if v.Value ~= "" then check() end
         v:GetPropertyChangedSignal("Value"):Connect(check)
     elseif v:IsA("NumberValue") then
-        if hookedValueObjects[v] then
-            sniffed[v] = true
-            return
-        end
+        if hookedValueObjects[v] then sniffed[v] = true; return end
         sniffed[v] = true
         hookedValueObjects[v] = true
         v:GetPropertyChangedSignal("Value"):Connect(function()
-            if not autoEvidenceDetectActive then
-                return
-            end
+            if not autoEvidenceDetectActive then return end
             local n, val = v.Name:lower(), v.Value
-            if typeof(val) ~= "number" then
-                return
-            end
+            if typeof(val) ~= "number" then return end
             if (n:find("level") or n:find("emf")) and val >= 5 then
                 addDetectedEvidence("EMF Level 5")
             end
         end)
     else
-        local ok, attrs = pcall(function()
-            return v:GetAttributes()
-        end)
-        if not ok or not attrs then
-            return
-        end
+        local ok, attrs = pcall(function() return v:GetAttributes() end)
+        if not ok or not attrs then return end
         local hasRelevant = false
         for name, val in pairs(attrs) do
-            if detectEvidenceFromString(name) then
-                hasRelevant = true
-                break
-            end
-            if type(val) == "string" and detectEvidenceFromString(val) then
-                hasRelevant = true
-                break
-            end
+            if detectEvidenceFromString(name) then hasRelevant = true; break end
+            if type(val) == "string" and detectEvidenceFromString(val) then hasRelevant = true; break end
         end
-        if not hasRelevant then
-            return
-        end
+        if not hasRelevant then return end
         sniffed[v] = true
         v.AttributeChanged:Connect(function(name)
-            if not autoEvidenceDetectActive then
-                return
-            end
+            if not autoEvidenceDetectActive then return end
             local val = v:GetAttribute(name)
             local ev = detectEvidenceFromString(name)
             if ev and (val == true or (type(val) == "number" and val > 0)) then
@@ -1768,44 +1487,30 @@ local function sniffInstance(v)
 end
 
 local function sniffContainer(root, maxDepth)
-    if not root then
-        return
-    end
+    if not root then return end
     maxDepth = maxDepth or 3
     local function walk(inst, depth)
-        if depth > maxDepth then
-            return
-        end
+        if depth > maxDepth then return end
         sniffInstance(inst)
-        for _, c in ipairs(inst:GetChildren()) do
-            walk(c, depth + 1)
-        end
+        for _, c in ipairs(inst:GetChildren()) do walk(c, depth + 1) end
     end
     pcall(walk, root, 0)
 end
 
 do
     sniffContainer(LocalPlayer:FindFirstChild("Backpack"), 3)
-    if LocalPlayer.Character then
-        sniffContainer(LocalPlayer.Character, 3)
-    end
+    if LocalPlayer.Character then sniffContainer(LocalPlayer.Character, 3) end
     local map = Workspace:FindFirstChild("Map")
     if map then
         local items = map:FindFirstChild("Items")
-        if items then
-            sniffContainer(items, 3)
-        end
+        if items then sniffContainer(items, 3) end
         local zones = map:FindFirstChild("Zones")
-        if zones then
-            sniffContainer(zones, 3)
-        end
+        if zones then sniffContainer(zones, 3) end
     end
 end
 
 local function hookToolByName(t)
-    if not t or hookedTools[t] then
-        return
-    end
+    if not t or hookedTools[t] then return end
     local n = t.Name
     if n == "EMF Reader" or n == "EMF" then
         hookEMF(t)
@@ -1824,17 +1529,11 @@ end
 
 task.spawn(function()
     local map = Workspace:WaitForChild("Map", 30)
-    if not map then
-        return
-    end
+    if not map then return end
     local items = map:WaitForChild("Items", 30)
-    if not items then
-        return
-    end
+    if not items then return end
     for _, v in ipairs(items:GetChildren()) do
-        if v:IsA("Tool") then
-            hookToolByName(v)
-        end
+        if v:IsA("Tool") then hookToolByName(v) end
     end
     items.ChildAdded:Connect(function(v)
         if v:IsA("Tool") then
@@ -1848,9 +1547,7 @@ task.spawn(function()
     local bp = LocalPlayer:WaitForChild("Backpack", 30)
     if bp then
         for _, v in ipairs(bp:GetChildren()) do
-            if v:IsA("Tool") then
-                hookToolByName(v)
-            end
+            if v:IsA("Tool") then hookToolByName(v) end
         end
         bp.ChildAdded:Connect(function(v)
             if v:IsA("Tool") then
@@ -1864,58 +1561,40 @@ end)
 LocalPlayer.CharacterAdded:Connect(function(c)
     task.wait(2)
     for _, v in ipairs(c:GetChildren()) do
-        if v:IsA("Tool") then
-            hookToolByName(v)
-        end
+        if v:IsA("Tool") then hookToolByName(v) end
     end
     sniffContainer(c, 3)
 end)
 
 local promptCache = setmetatable({}, {__mode = "k"})
-
 local function applyInstantInteract(p)
-    if not p:IsA("ProximityPrompt") or promptCache[p] then
-        return
-    end
+    if not p:IsA("ProximityPrompt") or promptCache[p] then return end
     promptCache[p] = p.HoldDuration
-    if p.HoldDuration > 0 then
-        p.HoldDuration = 0
-    end
+    if p.HoldDuration > 0 then p.HoldDuration = 0 end
 end
 
 local function restoreInstantInteract()
     for p, origHold in pairs(promptCache) do
         if p.Parent then
-            pcall(function()
-                p.HoldDuration = origHold
-            end)
+            pcall(function() p.HoldDuration = origHold end)
         end
     end
     promptCache = setmetatable({}, {__mode = "k"})
 end
 
 local PromptConn = nil
-
 local function enablePromptWatcher()
-    if PromptConn then
-        return
-    end
+    if PromptConn then return end
     PromptConn = Workspace.DescendantAdded:Connect(function(d)
-        if d:IsA("ProximityPrompt") then
-            applyInstantInteract(d)
-        end
+        if d:IsA("ProximityPrompt") then applyInstantInteract(d) end
     end)
 end
-
 local function disablePromptWatcher()
-    if PromptConn then
-        PromptConn:Disconnect()
-        PromptConn = nil
-    end
+    if PromptConn then PromptConn:Disconnect() PromptConn = nil end
 end
 
 -- ============================================================
--- INFINITE STAMINA + SPRINT BOOST v3
+-- INFINITE STAMINA + SPRINT BOOST v4
 -- ============================================================
 local StaminaNumberValues, StaminaAttrTargets = {}, {}
 local LastStaminaScan = 0
@@ -2024,6 +1703,7 @@ end)
 
 -- Sprint button finder (mobile)
 local MobileSprintButton = nil
+local mobileSprintButtonHeld = false
 local SPRINT_NAME_HINTS = {"sprintbutton", "sprint", "runbutton", "run_button", "dash", "boost"}
 
 local function nameMatchesSprint(n)
@@ -2035,13 +1715,44 @@ local function nameMatchesSprint(n)
     return false
 end
 
+local function hookMobileButton(btn)
+    if not btn then return end
+    pcall(function()
+        btn.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.Touch then
+                mobileSprintButtonHeld = true
+            end
+        end)
+    end)
+    pcall(function()
+        btn.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.Touch then
+                mobileSprintButtonHeld = false
+            end
+        end)
+    end)
+    pcall(function()
+        btn.MouseButton1Down:Connect(function()
+            mobileSprintButtonHeld = true
+        end)
+    end)
+    pcall(function()
+        btn.MouseButton1Up:Connect(function()
+            mobileSprintButtonHeld = false
+        end)
+    end)
+    print("[SysHub][Stamina] Hooked sprint button: " .. btn:GetFullName())
+end
+
 local function tryHookCandidate(d)
     if not d or not d.Name then return end
     if MobileSprintButton and MobileSprintButton.Parent then return end
     if not nameMatchesSprint(d.Name) then return end
+    if not (d:IsA("TextButton") or d:IsA("ImageButton") or d:IsA("Frame") or d:IsA("ImageLabel")) then return end
     if d.AbsolutePosition == nil or d.AbsoluteSize == nil then return end
     MobileSprintButton = d
     print("[SysHub][Stamina] Sprint button: " .. d:GetFullName())
+    hookMobileButton(d)
 end
 
 local function scanForSprintButtonIn(root)
@@ -2093,30 +1804,24 @@ task.spawn(function()
     end)
 end)
 
--- Sprint held detection (PC + Mobile)
-local function isSprintHeld()
-    if UserInputService.KeyboardEnabled then
-        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)
-            or UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then
-            return true
-        end
-    end
-    if UserInputService.TouchEnabled then
+-- Simple sprint detection (PC + Mobile)
+local function isSprintInput()
+    -- PC: keyboard Shift
+    if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then return true end
+    if UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then return true end
+    -- Mobile: InputBegan/Ended hook state
+    if UserInputService.TouchEnabled and mobileSprintButtonHeld then return true end
+    -- Mobile: touch pada sprint button region
+    if UserInputService.TouchEnabled and MobileSprintButton and MobileSprintButton.Parent then
         local ok, touches = pcall(function() return UserInputService:GetTouches() end)
         if ok and touches and #touches > 0 then
-            if MobileSprintButton and MobileSprintButton.Parent then
-                local bp = MobileSprintButton.AbsolutePosition
-                local bs = MobileSprintButton.AbsoluteSize
-                local pad = 30
-                for _, t in ipairs(touches) do
-                    local px, py = t.Position.X, t.Position.Y
-                    if px >= bp.X - pad and px <= bp.X + bs.X + pad
-                       and py >= bp.Y - pad and py <= bp.Y + bs.Y + pad then
-                        return true
-                    end
-                end
-            else
-                if LocalPlayer:GetAttribute("IsMoving") == true then
+            local bp = MobileSprintButton.AbsolutePosition
+            local bs = MobileSprintButton.AbsoluteSize
+            local pad = 40
+            for _, t in ipairs(touches) do
+                local px, py = t.Position.X, t.Position.Y
+                if px >= bp.X - pad and px <= bp.X + bs.X + pad
+                   and py >= bp.Y - pad and py <= bp.Y + bs.Y + pad then
                     return true
                 end
             end
@@ -2125,17 +1830,31 @@ local function isSprintHeld()
     return false
 end
 
-local function getSprintSpeed()
-    local sprintWS = capturedSprintSpeed or (originalWalkSpeed and originalWalkSpeed * 1.5) or 24
-    if customWalkSpeedEnabled and targetWalkSpeed > sprintWS then
-        sprintWS = targetWalkSpeed
+-- KUNCI FIX: enforce WalkSpeed hanya saat sprint held. Kalau tidak, jangan sentuh.
+local function getSprintTarget()
+    if originalWalkSpeed then
+        return math.max(originalWalkSpeed * 1.5, capturedSprintSpeed or 0, 24)
     end
-    return sprintWS
+    return 24
 end
 
-local lastSprintHeldTick = 0
+-- Heartbeat enforcement
+RunService.Heartbeat:Connect(function()
+    if not infiniteStaminaEnabled then return end
+    forceStamina()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    if isSprintInput() then
+        local target = getSprintTarget()
+        if hum.WalkSpeed < target then
+            hum.WalkSpeed = target
+        end
+    end
+end)
 
--- REACTIVE: setiap kali game reset WalkSpeed → langsung override saat sprint
+-- Reactive: setiap game set WalkSpeed turun saat sprint di-hold → balikin
 local SprintReactiveConn = nil
 local function attachSprintReactive(char)
     if SprintReactiveConn then SprintReactiveConn:Disconnect() end
@@ -2144,59 +1863,18 @@ local function attachSprintReactive(char)
     if not hum then return end
     SprintReactiveConn = hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
         if not infiniteStaminaEnabled then return end
-        if not isSprintHeld() then return end
-        local target = getSprintSpeed()
-        if hum.WalkSpeed < target - 0.5 then
+        if not isSprintInput() then return end
+        local target = getSprintTarget()
+        if hum.WalkSpeed < target then
             hum.WalkSpeed = target
         end
     end)
 end
 
--- Enforcement: Stepped + Heartbeat + BindToRenderStep(Last)
-local function sprintEnforce()
-    if not infiniteStaminaEnabled then return end
-    local char = LocalPlayer.Character
-    if not char then return end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hum then return end
-
-    forceStamina()
-
-    if isSprintHeld() then
-        lastSprintHeldTick = tick()
-        local target = getSprintSpeed()
-        if hum.WalkSpeed < target then
-            hum.WalkSpeed = target
-        end
-        pcall(function()
-            if LocalPlayer:GetAttribute("IsSprinting") ~= true then
-                LocalPlayer:SetAttribute("IsSprinting", true)
-            end
-        end)
-    else
-        if tick() - lastSprintHeldTick > 0.15 then
-            if originalWalkSpeed and hum.WalkSpeed > originalWalkSpeed + 0.5 then
-                hum.WalkSpeed = originalWalkSpeed
-            end
-            pcall(function()
-                if LocalPlayer:GetAttribute("IsSprinting") == true then
-                    LocalPlayer:SetAttribute("IsSprinting", false)
-                end
-            end)
-        end
-    end
-end
-
-RunService.Heartbeat:Connect(sprintEnforce)
-RunService.Stepped:Connect(sprintEnforce)
-pcall(function()
-    RunService:BindToRenderStep("SysHub_SprintGuard", Enum.RenderPriority.Last.Value, sprintEnforce)
-end)
-
 -- Capture sprint speed observed from game
 task.spawn(function()
     while true do
-        task.wait(0.15)
+        task.wait(0.2)
         local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
         if hum and originalWalkSpeed then
             local ws = hum.WalkSpeed
@@ -2207,9 +1885,8 @@ task.spawn(function()
     end
 end)
 
--- attachWalkSpeed + Custom WalkSpeed
+-- attachWalkSpeed (untuk track originalWalkSpeed + Custom WalkSpeed)
 local WalkSpeedConn = nil
-
 local function attachWalkSpeed(char)
     if WalkSpeedConn then WalkSpeedConn:Disconnect() end
     WalkSpeedConn = nil
@@ -2217,9 +1894,7 @@ local function attachWalkSpeed(char)
     if not hum then return end
     if not originalWalkSpeed then
         originalWalkSpeed = hum.WalkSpeed
-    end
-    if not customWalkSpeedEnabled and originalWalkSpeed then
-        hum.WalkSpeed = originalWalkSpeed
+        print("[SysHub][Stamina] Original WalkSpeed: " .. tostring(originalWalkSpeed))
     end
     WalkSpeedConn = hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
         if originalWalkSpeed then
@@ -2238,15 +1913,15 @@ end
 if LocalPlayer.Character then
     attachWalkSpeed(LocalPlayer.Character)
 end
-
 LocalPlayer.CharacterAdded:Connect(function(c)
     task.wait(0.3)
     attachWalkSpeed(c)
 end)
 
+-- Custom WalkSpeed enforcement (independen)
 RunService.RenderStepped:Connect(function()
     if not customWalkSpeedEnabled then return end
-    if infiniteStaminaEnabled and isSprintHeld() then return end
+    if infiniteStaminaEnabled and isSprintInput() then return end
     local char = LocalPlayer.Character
     if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid")
@@ -2256,24 +1931,17 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
--- ============================================================
 -- NOCLIP
--- ============================================================
 local NoclipConn, CachedParts, CacheTick = nil, {}, 0
 local OrigCollide = setmetatable({}, {__mode = "k"})
 
 local function refreshNoclipCache()
     local char = LocalPlayer.Character
-    if not char then
-        CachedParts = {}
-        return
-    end
+    if not char then CachedParts = {} return end
     local list = {}
     for _, p in ipairs(char:GetDescendants()) do
         if p:IsA("BasePart") then
-            if OrigCollide[p] == nil then
-                OrigCollide[p] = p.CanCollide
-            end
+            if OrigCollide[p] == nil then OrigCollide[p] = p.CanCollide end
             table.insert(list, p)
         end
     end
@@ -2281,24 +1949,18 @@ local function refreshNoclipCache()
 end
 
 local function enableNoclip()
-    if NoclipConn then
-        NoclipConn:Disconnect()
-    end
+    if NoclipConn then NoclipConn:Disconnect() end
     refreshNoclipCache()
     CacheTick = tick()
     NoclipConn = RunService.Heartbeat:Connect(function()
         local char = LocalPlayer.Character
-        if not char then
-            return
-        end
+        if not char then return end
         if tick() - CacheTick > 2 then
             refreshNoclipCache()
             CacheTick = tick()
         end
         for _, p in ipairs(CachedParts) do
-            if p.Parent and p.CanCollide then
-                p.CanCollide = false
-            end
+            if p.Parent and p.CanCollide then p.CanCollide = false end
         end
         local hum = char:FindFirstChildOfClass("Humanoid")
         if hum and hum:GetState() == Enum.HumanoidStateType.Climbing then
@@ -2308,29 +1970,19 @@ local function enableNoclip()
 end
 
 local function disableNoclip()
-    if NoclipConn then
-        NoclipConn:Disconnect()
-    end
+    if NoclipConn then NoclipConn:Disconnect() end
     NoclipConn = nil
     for p, o in pairs(OrigCollide) do
-        if p.Parent then
-            pcall(function()
-                p.CanCollide = o
-            end)
-        end
+        if p.Parent then pcall(function() p.CanCollide = o end) end
     end
     OrigCollide = setmetatable({}, {__mode = "k"})
     CachedParts = {}
 end
 
 local function teleportTo(cf)
-    if not cf then
-        return false
-    end
+    if not cf then return false end
     local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not hrp then
-        return false
-    end
+    if not hrp then return false end
     pcall(function()
         hrp.AssemblyLinearVelocity = Vector3.zero
         hrp.AssemblyAngularVelocity = Vector3.zero
@@ -2338,13 +1990,9 @@ local function teleportTo(cf)
     hrp.CFrame = cf
     task.spawn(function()
         task.wait(0.05)
-        if hrp.Parent then
-            hrp.CFrame = cf
-        end
+        if hrp.Parent then hrp.CFrame = cf end
         task.wait(0.05)
-        if hrp.Parent then
-            hrp.CFrame = cf
-        end
+        if hrp.Parent then hrp.CFrame = cf end
     end)
     return true
 end
@@ -2352,28 +2000,18 @@ end
 local function findVanCFrame()
     local map = Workspace:FindFirstChild("Map")
     local van = (map and map:FindFirstChild("Van")) or Workspace:FindFirstChild("IntroVan") or Workspace:FindFirstChild("Van")
-    if not van then
-        return nil
-    end
+    if not van then return nil end
     local core = van:FindFirstChild("CoreElements")
     if core then
         local sp = core:FindFirstChild("SpawnLocation")
-        if sp and sp:IsA("BasePart") then
-            return sp.CFrame + Vector3.new(0, 3, 0)
-        end
+        if sp and sp:IsA("BasePart") then return sp.CFrame + Vector3.new(0, 3, 0) end
     end
     local sp2 = van:FindFirstChild("SpawnLocation", true)
-    if sp2 and sp2:IsA("BasePart") then
-        return sp2.CFrame + Vector3.new(0, 3, 0)
-    end
+    if sp2 and sp2:IsA("BasePart") then return sp2.CFrame + Vector3.new(0, 3, 0) end
     local seat = van:FindFirstChildWhichIsA("VehicleSeat", true) or van:FindFirstChildWhichIsA("Seat", true)
-    if seat then
-        return seat.CFrame + Vector3.new(0, 3, 0)
-    end
+    if seat then return seat.CFrame + Vector3.new(0, 3, 0) end
     local p = van:FindFirstChildWhichIsA("BasePart", true)
-    if p then
-        return p.CFrame + Vector3.new(0, 4, 0)
-    end
+    if p then return p.CFrame + Vector3.new(0, 4, 0) end
     return nil
 end
 
@@ -2382,37 +2020,25 @@ local function findGeneratorCFrame()
     local gf = map and map:FindFirstChild("Generators")
     if gf then
         local p = gf:FindFirstChildWhichIsA("BasePart", true)
-        if p then
-            return p.CFrame + Vector3.new(0, 1.5, 2.5)
-        end
+        if p then return p.CFrame + Vector3.new(0, 1.5, 2.5) end
     end
     return nil
 end
 
 local espFolder = Instance.new("Folder")
 espFolder.Name = "SysHub_ESP_Holder"
-pcall(function()
-    espFolder.Parent = game:GetService("CoreGui")
-end)
-if not espFolder.Parent then
-    espFolder.Parent = Workspace
-end
+pcall(function() espFolder.Parent = game:GetService("CoreGui") end)
+if not espFolder.Parent then espFolder.Parent = Workspace end
 
 local espTrackers = {Ghost = {}, GhostRoom = {}, Cursed = {}, BooBoo = {}, Breaker = {}, Teammates = {}}
 local espEnabled = {Ghost = false, GhostRoom = false, Cursed = false, BooBoo = false, Breaker = false, Teammates = false}
 
 local function clearESP(tag)
-    if not espTrackers[tag] then
-        return
-    end
+    if not espTrackers[tag] then return end
     for _, item in pairs(espTrackers[tag]) do
         pcall(function()
-            if item.Highlight then
-                item.Highlight:Destroy()
-            end
-            if item.Billboard then
-                item.Billboard:Destroy()
-            end
+            if item.Highlight then item.Highlight:Destroy() end
+            if item.Billboard then item.Billboard:Destroy() end
         end)
     end
     espTrackers[tag] = {}
@@ -2420,40 +2046,24 @@ end
 
 local function removeESPSingle(tag, target)
     local e = espTrackers[tag] and espTrackers[tag][target]
-    if not e then
-        return
-    end
+    if not e then return end
     pcall(function()
-        if e.Highlight then
-            e.Highlight:Destroy()
-        end
-        if e.Billboard then
-            e.Billboard:Destroy()
-        end
+        if e.Highlight then e.Highlight:Destroy() end
+        if e.Billboard then e.Billboard:Destroy() end
     end)
     espTrackers[tag][target] = nil
 end
 
 local function addESP(tag, target, root, baseText, color)
-    if not target or not root then
-        return
-    end
-    if not espTrackers[tag] then
-        espTrackers[tag] = {}
-    end
+    if not target or not root then return end
+    if not espTrackers[tag] then espTrackers[tag] = {} end
     if espTrackers[tag][target] then
         local e = espTrackers[tag][target]
         e.baseText = baseText
         e.color = color
-        if e.Highlight then
-            e.Highlight.FillColor = color
-        end
-        if e.Label then
-            e.Label.TextColor3 = color
-        end
-        if e.Billboard and e.Billboard.Adornee ~= root then
-            e.Billboard.Adornee = root
-        end
+        if e.Highlight then e.Highlight.FillColor = color end
+        if e.Label then e.Label.TextColor3 = color end
+        if e.Billboard and e.Billboard.Adornee ~= root then e.Billboard.Adornee = root end
         return
     end
     local h = Instance.new("Highlight")
@@ -2505,9 +2115,7 @@ task.spawn(function()
 end)
 
 local function scanGhostESP()
-    if not espEnabled.Ghost then
-        return
-    end
+    if not espEnabled.Ghost then return end
     local c = Workspace:FindFirstChild("Ghost")
     local found = false
     if c and c:IsA("Model") then
@@ -2541,7 +2149,6 @@ local function scanGhostESP()
 end
 
 local currentRoomZone = nil
-
 local function scanGhostRoomESP()
     if not espEnabled.GhostRoom then
         if currentRoomZone then
@@ -2552,14 +2159,11 @@ local function scanGhostRoomESP()
     end
     local map = Workspace:FindFirstChild("Map")
     local zones = map and map:FindFirstChild("Zones")
-    if not zones then
-        return
-    end
+    if not zones then return end
     local coldest, coldestTemp = nil, 999
     for _, z in ipairs(zones:GetChildren()) do
         local zn = z.Name:lower()
-        local skip = z:FindFirstChild("Exclude") or zn:find("hitbox")
-            or zn:find("zonelist") or zn == "zones"
+        local skip = z:FindFirstChild("Exclude") or zn:find("hitbox") or zn:find("zonelist") or zn == "zones"
         if not skip then
             local tv = z:FindFirstChild("_____Temperature")
             if tv and tv:IsA("NumberValue") and typeof(tv.Value) == "number" and tv.Value < coldestTemp then
@@ -2579,9 +2183,7 @@ local function scanGhostRoomESP()
         removeESPSingle("GhostRoom", currentRoomZone)
         currentRoomZone = nil
     end
-    if currentRoomZone and not currentRoomZone.Parent then
-        currentRoomZone = nil
-    end
+    if currentRoomZone and not currentRoomZone.Parent then currentRoomZone = nil end
     local p = coldest:IsA("BasePart") and coldest or coldest:FindFirstChildWhichIsA("BasePart", true)
     if p then
         local isFreezing = isFreezingValue(coldestTemp)
@@ -2593,17 +2195,13 @@ local function scanGhostRoomESP()
 end
 
 local function scanBreakerESP()
-    if not espEnabled.Breaker then
-        return
-    end
+    if not espEnabled.Breaker then return end
     local map = Workspace:FindFirstChild("Map")
     local gf = map and map:FindFirstChild("Generators")
     if gf then
         for _, g in ipairs(gf:GetChildren()) do
             local p = g:IsA("BasePart") and g or g:FindFirstChildWhichIsA("BasePart", true)
-            if p then
-                addESP("Breaker", g, p, "BREAKER: " .. g.Name, Color3.fromRGB(255, 220, 50))
-            end
+            if p then addESP("Breaker", g, p, "BREAKER: " .. g.Name, Color3.fromRGB(255, 220, 50)) end
         end
     end
 end
@@ -2627,48 +2225,27 @@ local CURSED_KW = {
 local function hasCursedKeyword(name)
     local n = (name or ""):lower()
     for _, kw in ipairs(CURSED_KW) do
-        if n:find(kw, 1, true) then
-            return true
-        end
+        if n:find(kw, 1, true) then return true end
     end
     return false
 end
 
 local cursedScanned = setmetatable({}, {__mode = "k"})
-
 local function scanCursedESP()
-    if not espEnabled.Cursed then
-        return
-    end
+    if not espEnabled.Cursed then return end
     for obj in pairs(espTrackers.Cursed) do
-        if not obj.Parent then
-            removeESPSingle("Cursed", obj)
-        end
+        if not obj.Parent then removeESPSingle("Cursed", obj) end
     end
     local map = Workspace:FindFirstChild("Map")
     local function tryMark(item)
-        if not item or not item.Parent or espTrackers.Cursed[item] or cursedScanned[item] then
-            return
-        end
-        if isBooBooName(item.Name) then
-            return
-        end
-        if Players:GetPlayerFromCharacter(item) then
-            return
-        end
-        if item:IsA("Tool") and item.Parent and item.Parent:FindFirstChildOfClass("Humanoid") then
-            return
-        end
-        if not hasCursedKeyword(item.Name) then
-            return
-        end
+        if not item or not item.Parent or espTrackers.Cursed[item] or cursedScanned[item] then return end
+        if isBooBooName(item.Name) then return end
+        if Players:GetPlayerFromCharacter(item) then return end
+        if item:IsA("Tool") and item.Parent and item.Parent:FindFirstChildOfClass("Humanoid") then return end
+        if not hasCursedKeyword(item.Name) then return end
         local p = item:IsA("BasePart") and item or item:FindFirstChild("Handle") or item:FindFirstChildWhichIsA("BasePart", true)
-        if not p then
-            return
-        end
-        if p.Transparency >= 1 and (not item:IsA("Model") or #item:GetChildren() == 0) then
-            return
-        end
+        if not p then return end
+        if p.Transparency >= 1 and (not item:IsA("Model") or #item:GetChildren() == 0) then return end
         addESP("Cursed", item, p, "CURSED: " .. item.Name, Color3.fromRGB(220, 80, 255))
         cursedScanned[item] = true
     end
@@ -2676,150 +2253,83 @@ local function scanCursedESP()
     for _, folderName in ipairs(folders) do
         if map then
             local f = map:FindFirstChild(folderName)
-            if f then
-                for _, item in ipairs(f:GetChildren()) do
-                    tryMark(item)
-                end
-            end
+            if f then for _, item in ipairs(f:GetChildren()) do tryMark(item) end end
         end
         local f2 = Workspace:FindFirstChild(folderName)
-        if f2 then
-            for _, item in ipairs(f2:GetChildren()) do
-                tryMark(item)
-            end
-        end
+        if f2 then for _, item in ipairs(f2:GetChildren()) do tryMark(item) end end
     end
     if map then
         local items = map:FindFirstChild("Items")
-        if items then
-            for _, item in ipairs(items:GetChildren()) do
-                tryMark(item)
-            end
-        end
-        for _, item in ipairs(map:GetChildren()) do
-            tryMark(item)
-        end
+        if items then for _, item in ipairs(items:GetChildren()) do tryMark(item) end end
+        for _, item in ipairs(map:GetChildren()) do tryMark(item) end
     end
-    for _, item in ipairs(Workspace:GetChildren()) do
-        tryMark(item)
-    end
+    for _, item in ipairs(Workspace:GetChildren()) do tryMark(item) end
 end
 
 local boobooScanned = setmetatable({}, {__mode = "k"})
-
 local function scanBooBooESP()
-    if not espEnabled.BooBoo then
-        return
-    end
+    if not espEnabled.BooBoo then return end
     for obj in pairs(espTrackers.BooBoo) do
-        if not obj.Parent then
-            removeESPSingle("BooBoo", obj)
-        end
+        if not obj.Parent then removeESPSingle("BooBoo", obj) end
     end
     local function tryMark(item)
-        if not item or not item.Parent or espTrackers.BooBoo[item] or boobooScanned[item] then
-            return
-        end
-        if Players:GetPlayerFromCharacter(item) then
-            return
-        end
-        if item:IsA("Tool") and item.Parent and item.Parent:FindFirstChildOfClass("Humanoid") then
-            return
-        end
-        if not isBooBooName(item.Name) then
-            return
-        end
+        if not item or not item.Parent or espTrackers.BooBoo[item] or boobooScanned[item] then return end
+        if Players:GetPlayerFromCharacter(item) then return end
+        if item:IsA("Tool") and item.Parent and item.Parent:FindFirstChildOfClass("Humanoid") then return end
+        if not isBooBooName(item.Name) then return end
         local p = item:IsA("BasePart") and item or item:FindFirstChild("Handle") or item:FindFirstChildWhichIsA("BasePart", true)
-        if not p or p.Transparency >= 1 then
-            return
-        end
+        if not p or p.Transparency >= 1 then return end
         addESP("BooBoo", item, p, "Boo-Boo Doll", Color3.fromRGB(255, 100, 220))
         boobooScanned[item] = true
     end
-    for _, item in ipairs(Workspace:GetChildren()) do
-        tryMark(item)
-    end
+    for _, item in ipairs(Workspace:GetChildren()) do tryMark(item) end
     local map = Workspace:FindFirstChild("Map")
-    if map then
-        for _, item in ipairs(map:GetChildren()) do
-            tryMark(item)
-        end
-    end
+    if map then for _, item in ipairs(map:GetChildren()) do tryMark(item) end end
 end
 
 local teammateHooked = setmetatable({}, {__mode = "k"})
-
 local function killTeammateESP(char)
-    if char then
-        removeESPSingle("Teammates", char)
-    end
+    if char then removeESPSingle("Teammates", char) end
 end
 
 local function isPlayerDead(plr, char, hum)
-    if not char or not char.Parent or char.Parent ~= Workspace then
-        return true
-    end
-    if not hum or hum.Health <= 0 then
-        return true
-    end
+    if not char or not char.Parent or char.Parent ~= Workspace then return true end
+    if not hum or hum.Health <= 0 then return true end
     local st = hum:GetState()
-    if st == Enum.HumanoidStateType.Dead then
-        return true
-    end
-    if st == Enum.HumanoidStateType.Physics and hum.Health <= 0 then
-        return true
-    end
-    if hum.PlatformStand and hum.Health <= 0 then
-        return true
-    end
-    if plr and plr.Character ~= char then
-        return true
-    end
+    if st == Enum.HumanoidStateType.Dead then return true end
+    if st == Enum.HumanoidStateType.Physics and hum.Health <= 0 then return true end
+    if hum.PlatformStand and hum.Health <= 0 then return true end
+    if plr and plr.Character ~= char then return true end
     return false
 end
 
 local function attachTeammateDeathHook(plr, char)
-    if teammateHooked[char] then
-        return
-    end
+    if teammateHooked[char] then return end
     teammateHooked[char] = true
     local hum = char:FindFirstChildOfClass("Humanoid")
     if hum then
-        hum.Died:Connect(function()
-            killTeammateESP(char)
-        end)
+        hum.Died:Connect(function() killTeammateESP(char) end)
         hum:GetPropertyChangedSignal("Health"):Connect(function()
-            if hum.Health <= 0 then
-                killTeammateESP(char)
-            end
+            if hum.Health <= 0 then killTeammateESP(char) end
         end)
         hum.StateChanged:Connect(function(_, newState)
-            if newState == Enum.HumanoidStateType.Dead then
-                killTeammateESP(char)
-            elseif newState == Enum.HumanoidStateType.Physics and hum.Health <= 0 then
-                killTeammateESP(char)
-            end
+            if newState == Enum.HumanoidStateType.Dead then killTeammateESP(char)
+            elseif newState == Enum.HumanoidStateType.Physics and hum.Health <= 0 then killTeammateESP(char) end
         end)
     end
     char.AncestryChanged:Connect(function(_, newParent)
-        if newParent == nil or newParent ~= Workspace then
-            killTeammateESP(char)
-        end
+        if newParent == nil or newParent ~= Workspace then killTeammateESP(char) end
     end)
     pcall(function()
         plr.CharacterRemoving:Connect(function(c)
-            if c == char then
-                killTeammateESP(char)
-            end
+            if c == char then killTeammateESP(char) end
         end)
     end)
 end
 
 local function scanTeammatesESP()
     if not espEnabled.Teammates then
-        for obj in pairs(espTrackers.Teammates) do
-            removeESPSingle("Teammates", obj)
-        end
+        for obj in pairs(espTrackers.Teammates) do removeESPSingle("Teammates", obj) end
         return
     end
     for obj in pairs(espTrackers.Teammates) do
@@ -2828,9 +2338,7 @@ local function scanTeammatesESP()
         else
             local hum = obj:FindFirstChildOfClass("Humanoid")
             local owner = Players:GetPlayerFromCharacter(obj)
-            if isPlayerDead(owner, obj, hum) then
-                killTeammateESP(obj)
-            end
+            if isPlayerDead(owner, obj, hum) then killTeammateESP(obj) end
         end
     end
     for _, plr in ipairs(Players:GetPlayers()) do
@@ -2851,24 +2359,12 @@ end
 task.spawn(function()
     while true do
         task.wait(0.5)
-        if espEnabled.Ghost then
-            pcall(scanGhostESP)
-        end
-        if espEnabled.GhostRoom then
-            pcall(scanGhostRoomESP)
-        end
-        if espEnabled.Breaker then
-            pcall(scanBreakerESP)
-        end
-        if espEnabled.Cursed then
-            pcall(scanCursedESP)
-        end
-        if espEnabled.BooBoo then
-            pcall(scanBooBooESP)
-        end
-        if espEnabled.Teammates then
-            pcall(scanTeammatesESP)
-        end
+        if espEnabled.Ghost then pcall(scanGhostESP) end
+        if espEnabled.GhostRoom then pcall(scanGhostRoomESP) end
+        if espEnabled.Breaker then pcall(scanBreakerESP) end
+        if espEnabled.Cursed then pcall(scanCursedESP) end
+        if espEnabled.BooBoo then pcall(scanBooBooESP) end
+        if espEnabled.Teammates then pcall(scanTeammatesESP) end
     end
 end)
 
@@ -2897,23 +2393,16 @@ local function setFullBright(s)
         if not LightingConn then
             local queued = false
             LightingConn = Lighting.Changed:Connect(function()
-                if applyingFB or queued then
-                    return
-                end
+                if applyingFB or queued then return end
                 queued = true
                 task.spawn(function()
                     queued = false
-                    if fullBrightEnabled then
-                        setFullBright(true)
-                    end
+                    if fullBrightEnabled then setFullBright(true) end
                 end)
             end)
         end
     else
-        if LightingConn then
-            LightingConn:Disconnect()
-            LightingConn = nil
-        end
+        if LightingConn then LightingConn:Disconnect() LightingConn = nil end
         Lighting.Brightness = origLight.Brightness
         Lighting.ClockTime = origLight.ClockTime
         Lighting.FogEnd = origLight.FogEnd
@@ -2951,9 +2440,7 @@ TabAutomation:Section({Title = "Ghost Hunt Alert", Opened = true}):Toggle({
     Title = "Hunt Notification";
     Description = "Notifikasi saat ghost mulai berburu";
     Value = true;
-    Callback = function(s)
-        huntNotifyEnabled = s
-    end;
+    Callback = function(s) huntNotifyEnabled = s end;
 })
 
 TabAutomation:Section({Title = "Instant Interact", Opened = true}):Toggle({
@@ -2964,9 +2451,7 @@ TabAutomation:Section({Title = "Instant Interact", Opened = true}):Toggle({
         instantInteractEnabled = s
         if s then
             for _, v in ipairs(Workspace:GetDescendants()) do
-                if v:IsA("ProximityPrompt") then
-                    pcall(applyInstantInteract, v)
-                end
+                if v:IsA("ProximityPrompt") then pcall(applyInstantInteract, v) end
             end
             enablePromptWatcher()
         else
@@ -2990,60 +2475,36 @@ TabAutomation:Section({Title = "Utility", Opened = false}):Button({
 local SecESP = TabESP:Section({Title = "Visual ESP", Opened = true})
 SecESP:Toggle({Title = "Ghost ESP", Value = false, Callback = function(s)
     espEnabled.Ghost = s
-    if not s then
-        clearESP("Ghost")
-    else
-        scanGhostESP()
-    end
+    if not s then clearESP("Ghost") else scanGhostESP() end
 end})
 SecESP:Toggle({Title = "Ghost Room ESP (Auto-Switch)", Value = false, Callback = function(s)
     espEnabled.GhostRoom = s
     if not s then
-        if currentRoomZone then
-            removeESPSingle("GhostRoom", currentRoomZone)
-        end
+        if currentRoomZone then removeESPSingle("GhostRoom", currentRoomZone) end
         currentRoomZone = nil
     end
 end})
 SecESP:Toggle({Title = "Breaker ESP", Value = false, Callback = function(s)
     espEnabled.Breaker = s
-    if not s then
-        clearESP("Breaker")
-    else
-        scanBreakerESP()
-    end
+    if not s then clearESP("Breaker") else scanBreakerESP() end
 end})
 SecESP:Toggle({Title = "Cursed Object ESP", Value = false, Callback = function(s)
     espEnabled.Cursed = s
-    if not s then
-        clearESP("Cursed")
-    else
-        scanCursedESP()
-    end
+    if not s then clearESP("Cursed") else scanCursedESP() end
 end})
 SecESP:Toggle({Title = "Boo-Boo Doll ESP", Value = false, Callback = function(s)
     espEnabled.BooBoo = s
-    if not s then
-        clearESP("BooBoo")
-    else
-        scanBooBooESP()
-    end
+    if not s then clearESP("BooBoo") else scanBooBooESP() end
 end})
 SecESP:Toggle({Title = "Teammates ESP (Hidup saja)", Value = false, Callback = function(s)
     espEnabled.Teammates = s
-    if not s then
-        clearESP("Teammates")
-    else
-        scanTeammatesESP()
-    end
+    if not s then clearESP("Teammates") else scanTeammatesESP() end
 end})
 
 TabESP:Section({Title = "Vision", Opened = true}):Toggle({
     Title = "FullBright & No Fog";
     Value = false;
-    Callback = function(s)
-        setFullBright(s)
-    end;
+    Callback = function(s) setFullBright(s) end;
 })
 
 local SecMove = TabMovement:Section({Title = "Movement", Opened = true})
@@ -3055,16 +2516,9 @@ SecMove:Toggle({
         if s then
             pcall(scanStaminaAll)
             pcall(forceStamina)
-            if UserInputService.TouchEnabled then
-                pcall(findMobileSprintButton)
-            end
-        else
-            local char = LocalPlayer.Character
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            if hum and originalWalkSpeed then
-                hum.WalkSpeed = originalWalkSpeed
-            end
+            if UserInputService.TouchEnabled then pcall(findMobileSprintButton) end
         end
+        -- Tidak reset apapun saat OFF. Game handles sprint normally.
     end;
 })
 SecMove:Toggle({
@@ -3072,11 +2526,7 @@ SecMove:Toggle({
     Value = false;
     Callback = function(s)
         infiniteNoclipEnabled = s
-        if s then
-            enableNoclip()
-        else
-            disableNoclip()
-        end
+        if s then enableNoclip() else disableNoclip() end
     end;
 })
 
@@ -3088,9 +2538,7 @@ SecMove:Toggle({
         local char = LocalPlayer.Character
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         if s then
-            if hum then
-                hum.WalkSpeed = targetWalkSpeed
-            end
+            if hum then hum.WalkSpeed = targetWalkSpeed end
         else
             targetWalkSpeed = DEFAULT_WALKSPEED
             if walkSpeedSlider then
@@ -3098,9 +2546,7 @@ SecMove:Toggle({
                 pcall(function() walkSpeedSlider:SetValue(DEFAULT_WALKSPEED) end)
                 pcall(function() walkSpeedSlider.Value = DEFAULT_WALKSPEED end)
             end
-            if hum then
-                hum.WalkSpeed = originalWalkSpeed or 16
-            end
+            if hum then hum.WalkSpeed = originalWalkSpeed or 16 end
         end
     end;
 })
@@ -3108,25 +2554,15 @@ SecMove:Toggle({
 walkSpeedSlider = SecMove:Slider({
     Title = "WalkSpeed Value";
     Description = "16-120";
-    Value = {
-        Min = 16;
-        Max = 120;
-        Default = 20;
-    };
+    Value = {Min = 16, Max = 120, Default = 20};
     Callback = function(v)
-        if typeof(v) == "table" then
-            v = v.Value or v.Value1 or tonumber(v) or v
-        end
+        if typeof(v) == "table" then v = v.Value or v.Value1 or tonumber(v) or v end
         v = tonumber(v)
-        if not v then
-            return
-        end
+        if not v then return end
         targetWalkSpeed = v
         local char = LocalPlayer.Character
         local hum = char and char:FindFirstChildOfClass("Humanoid")
-        if customWalkSpeedEnabled and hum then
-            hum.WalkSpeed = v
-        end
+        if customWalkSpeedEnabled and hum then hum.WalkSpeed = v end
     end;
 })
 
@@ -3193,11 +2629,8 @@ task.spawn(function()
             StaminaNumberValues, StaminaAttrTargets = {}, {}
             LastStaminaScan = 0
             lastHuntNotify = 0
-            lastSprintHeldTick = 0
             statusUpdateFailures = 0
-            for tag in pairs(espTrackers) do
-                clearESP(tag)
-            end
+            for tag in pairs(espTrackers) do clearESP(tag) end
             refreshAutoStatusUI(true)
         end
         task.wait(3)
@@ -3206,4 +2639,4 @@ end)
 
 refreshAutoStatusUI(true)
 safeNotify({Title = "SysHub v6.9.37", Content = "Blair Assistant siap!", Duration = 5})
-print("[SysHub v6.9.37] Loaded (Sprint Fix v3)")
+print("[SysHub v6.9.37] Loaded (Sprint Fix v4)")
