@@ -1,4 +1,4 @@
---[[ SysHub - Blair v6.9.47 (Fix infinite stamina sprint - PC + Mobile, sprint-only trigger) ]]
+--[[ SysHub - Blair v6.9.48 (Fix infinite stamina sprint - always refill) ]]
 print("[SysHub] Starting...")
 local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
 print("[SysHub] WindUI loaded")
@@ -1919,7 +1919,7 @@ local function disablePromptWatcher()
 end
 
 -- ============================================================
--- Infinite Stamina (v6.9.47 — sprint-only trigger)
+-- Infinite Stamina (v6.9.48 — ALWAYS refill, sprint-only speed boost)
 -- ============================================================
 local StaminaNumberValues, StaminaAttrTargets = {}, {}
 local LastStaminaScan = 0
@@ -1939,7 +1939,7 @@ local function isStaminaName(name)
 end
 
 local function scanStaminaAll()
-    StaminaNumberValues, StaminaAttrTargets = {}, {}
+    local newNVs = {}
     local roots = {
         LocalPlayer.Character,
         LocalPlayer:FindFirstChild("Backpack"),
@@ -1949,11 +1949,22 @@ local function scanStaminaAll()
         if root then
             for _, v in ipairs(root:GetDescendants()) do
                 if v:IsA("NumberValue") and isStaminaName(v.Name) then
-                    StaminaNumberValues[v] = v.Value
+                    newNVs[v] = true
+                    -- JANGAN turunkan max yang sudah tersimpan
+                    if not StaminaNumberValues[v] or v.Value > StaminaNumberValues[v] then
+                        StaminaNumberValues[v] = v.Value
+                    end
                 end
             end
         end
     end
+    -- Hapus entry yang sudah tidak valid
+    for nv in pairs(StaminaNumberValues) do
+        if not nv.Parent then
+            StaminaNumberValues[nv] = nil
+        end
+    end
+    -- Attr targets (pertahankan yang lama)
     local attrTargets = {LocalPlayer}
     if LocalPlayer.Character then
         table.insert(attrTargets, LocalPlayer.Character)
@@ -1965,7 +1976,17 @@ local function scanStaminaAll()
     for _, inst in ipairs(attrTargets) do
         for name, val in pairs(inst:GetAttributes()) do
             if type(val) == "number" and isStaminaName(name) then
-                table.insert(StaminaAttrTargets, {inst = inst, name = name, max = val})
+                local found = false
+                for _, t in ipairs(StaminaAttrTargets) do
+                    if t.inst == inst and t.name == name then
+                        if val > t.max then t.max = val end
+                        found = true
+                        break
+                    end
+                end
+                if not found then
+                    table.insert(StaminaAttrTargets, {inst = inst, name = name, max = val})
+                end
             end
         end
     end
@@ -1985,16 +2006,28 @@ end
 
 local function forceStamina()
     for nv, maxVal in pairs(StaminaNumberValues) do
-        if nv.Parent and nv.Value < maxVal then
-            nv.Value = maxVal
+        if nv.Parent then
+            local cur = nv.Value
+            -- Update max kalau ada nilai lebih tinggi (mis. regen)
+            if cur > maxVal then
+                StaminaNumberValues[nv] = cur
+                maxVal = cur
+            end
+            if cur < maxVal then
+                nv.Value = maxVal
+            end
         end
     end
     for _, t in ipairs(StaminaAttrTargets) do
         local cur = t.inst:GetAttribute(t.name)
-        if type(cur) == "number" and cur < t.max then
-            pcall(function()
-                t.inst:SetAttribute(t.name, t.max)
-            end)
+        if type(cur) == "number" then
+            if cur > t.max then
+                t.max = cur
+            elseif cur < t.max then
+                pcall(function()
+                    t.inst:SetAttribute(t.name, t.max)
+                end)
+            end
         end
     end
 end
@@ -2017,16 +2050,17 @@ task.spawn(function()
     end
 end)
 
+-- Scan lebih cepat (0.5s) supaya nilai stamina baru ketangkap cepat
 task.spawn(function()
     while true do
         if infiniteStaminaEnabled then
             local now = tick()
-            if now - LastStaminaScan > 3 then
+            if now - LastStaminaScan > 0.5 then
                 LastStaminaScan = now
                 pcall(scanStaminaAll)
             end
         end
-        task.wait(0.5)
+        task.wait(0.2)
     end
 end)
 
@@ -2145,7 +2179,7 @@ local function isSprintActive()
         if ok and touches and #touches > 0 then
             local bp = MobileSprintButton.AbsolutePosition
             local bs = MobileSprintButton.AbsoluteSize
-            local pad = 30
+            local pad = 40
             for _, t in ipairs(touches) do
                 local px, py = t.Position.X, t.Position.Y
                 if px >= bp.X - pad and px <= bp.X + bs.X + pad
@@ -2160,8 +2194,7 @@ local function isSprintActive()
 end
 
 -- ============================================================
--- Heartbeat: Infinite stamina + sprint boost
--- HANYA aktif saat sprint ditekan
+-- Heartbeat (v6.9.48): ALWAYS refill stamina + sprint-only boost
 -- ============================================================
 local lastSprintDetectedTick = 0
 
@@ -2175,7 +2208,14 @@ RunService.Heartbeat:Connect(function()
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then return end
 
-    -- 1. Detect sprint (hanya true kalau tombol sprint benar-benar ditekan)
+    -- === KUNCI FIX: Refill stamina SETIAP FRAME ===
+    -- Jadi stamina gak pernah sempat kosong → game gak pernah
+    -- memaksa balik ke walking karena stamina habis.
+    if infiniteStaminaEnabled then
+        forceStamina()
+    end
+
+    -- Sprint detection (untuk boost kecepatan saja)
     local sprinting = false
     if infiniteStaminaEnabled then
         sprinting = isSprintActive()
@@ -2184,15 +2224,10 @@ RunService.Heartbeat:Connect(function()
         end
     end
 
-    -- 2. Infinite stamina: refill stamina HANYA saat sprint ditekan
-    if infiniteStaminaEnabled and sprinting then
-        forceStamina()
-    end
-
-    -- 3. WalkSpeed logic
+    -- WalkSpeed logic
     if infiniteStaminaEnabled and sprinting then
         -- Sprint boost — hanya saat sprint ditekan
-        local sprintWS = capturedSprintSpeed or (originalWalkSpeed and originalWalkSpeed * 1.5) or 19
+        local sprintWS = capturedSprintSpeed or (originalWalkSpeed and originalWalkSpeed * 1.5) or 24
         if customWalkSpeedEnabled and targetWalkSpeed > sprintWS then
             sprintWS = targetWalkSpeed
         end
@@ -2205,9 +2240,8 @@ RunService.Heartbeat:Connect(function()
             hum.WalkSpeed = targetWalkSpeed
         end
     elseif infiniteStaminaEnabled then
-        -- Infinite ON, sprint TIDAK ditekan → kembalikan ke kecepatan normal
-        -- Grace period 1 detik untuk hindari flicker
-        if tick() - lastSprintDetectedTick > 1.0 then
+        -- Sprint dilepas → kembalikan ke normal (grace pendek 0.3s)
+        if tick() - lastSprintDetectedTick > 0.3 then
             if originalWalkSpeed and hum.WalkSpeed > originalWalkSpeed + 0.5 then
                 hum.WalkSpeed = originalWalkSpeed
             end
@@ -3216,4 +3250,4 @@ end)
 
 refreshAutoStatusUI(true)
 safeNotify({Title = "SysHub", Content = "Blair Assistant siap!", Duration = 5})
-print("[SysHub v6.9.47] Loaded")
+print("[SysHub v6.9.48] Loaded")
