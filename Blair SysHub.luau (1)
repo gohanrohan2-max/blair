@@ -1,4 +1,4 @@
---[[ SysHub - Blair v6.9.46 (Fix Custom WS stuck) ]]
+--[[ SysHub - Blair v6.9.47 (Fix infinite stamina sprint) ]]
 print("[SysHub] Starting...")
 local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
 print("[SysHub] WindUI loaded")
@@ -1919,7 +1919,7 @@ local function disablePromptWatcher()
 end
 
 -- ============================================================
--- Infinite Stamina (v6.9.46 — fix stuck custom WS)
+-- Infinite Stamina (v6.9.47 — Heartbeat + grace period reset)
 -- ============================================================
 local StaminaNumberValues, StaminaAttrTargets = {}, {}
 local LastStaminaScan = 0
@@ -2157,9 +2157,11 @@ local function isSprintActive()
 end
 
 -- ============================================================
--- v6.9.46: SINGLE stepped handler — stamina + walkspeed, no stuck
+-- v6.9.47: SINGLE Heartbeat handler — v6.9.37 pattern + grace period reset
 -- ============================================================
-RunService.Stepped:Connect(function()
+local lastSprintDetectedTick = 0
+
+RunService.Heartbeat:Connect(function()
     if not infiniteStaminaEnabled and not customWalkSpeedEnabled then
         return
     end
@@ -2169,14 +2171,24 @@ RunService.Stepped:Connect(function()
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then return end
 
+    -- 1. Infinite: force refill stamina SETIAP FRAME (v6.9.37 behavior)
+    --    Ini yang bikin sprint tetap jalan meski stamina "habis"
+    if infiniteStaminaEnabled then
+        forceStamina()
+    end
+
+    -- 2. Detect sprint (hanya perlu kalau infinite ON)
     local sprinting = false
     if infiniteStaminaEnabled then
         sprinting = isSprintActive()
+        if sprinting then
+            lastSprintDetectedTick = tick()
+        end
     end
 
+    -- 3. WalkSpeed logic
     if infiniteStaminaEnabled and sprinting then
-        -- Sprint boost active → refill + boost WS
-        forceStamina()
+        -- Sprint boost
         local sprintWS = capturedSprintSpeed or (originalWalkSpeed and originalWalkSpeed * 1.5) or 19
         if customWalkSpeedEnabled and targetWalkSpeed > sprintWS then
             sprintWS = targetWalkSpeed
@@ -2185,15 +2197,18 @@ RunService.Stepped:Connect(function()
             hum.WalkSpeed = sprintWS
         end
     elseif customWalkSpeedEnabled then
-        -- Custom ON, tidak sprint (atau infinite OFF) → enforce target
+        -- Custom ON: enforce target (works in any state)
         if hum.WalkSpeed ~= targetWalkSpeed then
             hum.WalkSpeed = targetWalkSpeed
         end
-    elseif infiniteStaminaEnabled and not sprinting then
-        -- v6.9.46: Infinite ON, custom OFF, tidak sprint → RESET ke original
-        -- Ini fix "nyangkut" ketika custom di-toggle OFF saat sprint
-        if originalWalkSpeed and hum.WalkSpeed > originalWalkSpeed + 0.5 then
-            hum.WalkSpeed = originalWalkSpeed
+    elseif infiniteStaminaEnabled then
+        -- Infinite ON, custom OFF, not sprinting
+        -- v6.9.47: RESET hanya jika sudah > 1 detik TIDAK sprint (grace period)
+        -- Ini hindari reset saat deteksi sprint telat 1-2 frame
+        if tick() - lastSprintDetectedTick > 1.0 then
+            if originalWalkSpeed and hum.WalkSpeed > originalWalkSpeed + 0.5 then
+                hum.WalkSpeed = originalWalkSpeed
+            end
         end
     end
 end)
@@ -2235,8 +2250,7 @@ local function attachWalkSpeed(char)
                 capturedSprintSpeed = ws
             end
         end
-        -- v6.9.46: enforcement hanya kalau custom ON DAN infinite OFF
-        -- (biar tidak konflik dengan sprint boost dari infinite)
+        -- Enforcement hanya kalau custom ON DAN infinite OFF
         if customWalkSpeedEnabled and not infiniteStaminaEnabled and hum.WalkSpeed ~= targetWalkSpeed then
             hum.WalkSpeed = targetWalkSpeed
         end
@@ -3053,7 +3067,7 @@ SecMove:Toggle({
                 pcall(findMobileSprintButton)
             end
         else
-            -- v6.9.46: reset WS saat toggle OFF (fix stuck)
+            -- v6.9.47: reset WS saat toggle OFF
             local char = LocalPlayer.Character
             local hum = char and char:FindFirstChildOfClass("Humanoid")
             if hum and originalWalkSpeed then
@@ -3189,6 +3203,7 @@ task.spawn(function()
             LastStaminaScan = 0
             StaminaDebugPrinted = false
             MobileSprintDebugPrinted = false
+            lastSprintDetectedTick = 0
             statusUpdateFailures = 0
             for tag in pairs(espTrackers) do
                 clearESP(tag)
@@ -3201,4 +3216,4 @@ end)
 
 refreshAutoStatusUI(true)
 safeNotify({Title = "SysHub", Content = "Blair Assistant siap!", Duration = 5})
-print("[SysHub v6.9.46] Loaded")
+print("[SysHub v6.9.47] Loaded")
