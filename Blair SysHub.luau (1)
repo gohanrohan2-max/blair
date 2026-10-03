@@ -1,4 +1,4 @@
---[[ SysHub - Blair v6.9.41 (Infinite Stamina: auto-detect sprint PC+mobile) ]]
+--[[ SysHub - Blair v6.9.46 (Fix Custom WS stuck) ]]
 print("[SysHub] Starting...")
 local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
 print("[SysHub] WindUI loaded")
@@ -89,7 +89,6 @@ local hookedValueObjects = setmetatable({}, {__mode = "k"})
 local debugCounts = setmetatable({}, {__mode = "k"})
 local uvEvidenceFired = false
 local ghostOrbEvidenceFired = false
-local lastHuntNotify = 0
 
 local function safeNotify(opts)
     pcall(function()
@@ -276,11 +275,6 @@ local function notifyHunt(source)
     if not huntNotifyEnabled then
         return
     end
-    local now = tick()
-    if now - lastHuntNotify < 5 then
-        return
-    end
-    lastHuntNotify = now
     safeNotify({Title = "⚠️ GHOST HUNTING!", Content = "Ghost mulai berburu! [" .. tostring(source or "?") .. "]", Duration = 4})
     print("[SysHub] HUNT: " .. tostring(source))
 end
@@ -330,27 +324,25 @@ local function watchHuntingValue(bv, modelName, isSLSVisual)
         return
     end
     watchedHuntingValues[bv] = true
-    bv:GetPropertyChangedSignal("Value"):Connect(function()
-        if not bv.Value then
-            return
-        end
-        if isSLSVisual then
-            if autoEvidenceDetectActive then
-                addDetectedEvidence("SLS Anomaly")
+    local wasHunting = false
+    local function checkHunt()
+        if bv.Value and not wasHunting then
+            wasHunting = true
+            if isSLSVisual then
+                if autoEvidenceDetectActive then
+                    addDetectedEvidence("SLS Anomaly")
+                end
+            else
+                notifyHunt("Hunting=" .. modelName)
             end
-        else
-            notifyHunt("Hunting=" .. modelName)
-        end
-    end)
-    if bv.Value then
-        if isSLSVisual then
-            if autoEvidenceDetectActive then
-                addDetectedEvidence("SLS Anomaly")
-            end
-        else
-            notifyHunt("Hunting=" .. modelName)
+        elseif not bv.Value then
+            wasHunting = false
         end
     end
+    if bv.Value then
+        checkHunt()
+    end
+    bv:GetPropertyChangedSignal("Value"):Connect(checkHunt)
 end
 
 local function inspectHuntModel(model)
@@ -1927,7 +1919,7 @@ local function disablePromptWatcher()
 end
 
 -- ============================================================
--- Infinite Stamina (v6.9.41 — PC & Mobile auto-detect)
+-- Infinite Stamina (v6.9.46 — fix stuck custom WS)
 -- ============================================================
 local StaminaNumberValues, StaminaAttrTargets = {}, {}
 local LastStaminaScan = 0
@@ -2039,12 +2031,12 @@ task.spawn(function()
 end)
 
 -- ============================================================
--- v6.9.41: Sprint auto-detect (PC keyboard + Mobile sprint button)
+-- Sprint button "sprintbutton" — auto-find
 -- ============================================================
 local MobileSprintButton = nil
 local MobileSprintDebugPrinted = false
 
-local SPRINT_NAME_HINTS = {"sprint", "runbutton", "run_button", "dash", "boost"}
+local SPRINT_NAME_HINTS = {"sprintbutton", "sprint", "runbutton", "run_button", "dash", "boost"}
 
 local function nameMatchesSprint(n)
     if type(n) ~= "string" or #n == 0 then return false end
@@ -2057,103 +2049,134 @@ local function nameMatchesSprint(n)
     return false
 end
 
-local function findMobileSprintButton()
-    if MobileSprintButton and MobileSprintButton.Parent then
-        return
-    end
-    MobileSprintButton = nil
-    local pg = LocalPlayer:FindFirstChild("PlayerGui")
-    if not pg then return end
-    for _, d in ipairs(pg:GetDescendants()) do
-        if d:IsA("GuiButton") then
-            if nameMatchesSprint(d.Name) then
-                MobileSprintButton = d
-                if not MobileSprintDebugPrinted then
-                    MobileSprintDebugPrinted = true
-                    print("[SysHub][Stamina] Sprint button: " .. d:GetFullName())
-                end
-                return
-            end
-        end
+local function tryHookCandidate(d)
+    if not d or not d.Name then return end
+    if MobileSprintButton and MobileSprintButton.Parent then return end
+    if not nameMatchesSprint(d.Name) then return end
+    if d.AbsolutePosition == nil or d.AbsoluteSize == nil then return end
+    MobileSprintButton = d
+    if not MobileSprintDebugPrinted then
+        MobileSprintDebugPrinted = true
+        print("[SysHub][Stamina] Sprint button: " .. d:GetFullName())
+        print("[SysHub][Stamina] Button bounds: pos=" .. tostring(d.AbsolutePosition) .. " size=" .. tostring(d.AbsoluteSize))
     end
 end
 
-local function isMobileSprintTouched()
-    local ok, touches = pcall(function() return UserInputService:GetTouches() end)
-    if not ok or not touches or #touches == 0 then
-        return false
-    end
-    -- Primary: learned button bounds (accurate)
-    if MobileSprintButton and MobileSprintButton.Parent then
-        local bp = MobileSprintButton.AbsolutePosition
-        local bs = MobileSprintButton.AbsoluteSize
-        local pad = 15
-        for _, t in ipairs(touches) do
-            local px, py = t.Position.X, t.Position.Y
-            if px >= bp.X - pad and px <= bp.X + bs.X + pad
-               and py >= bp.Y - pad and py <= bp.Y + bs.Y + pad then
-                return true
-            end
+local function scanForSprintButtonIn(root)
+    if not root then return end
+    for _, d in ipairs(root:GetDescendants()) do
+        if MobileSprintButton and MobileSprintButton.Parent then
+            return
         end
+        tryHookCandidate(d)
     end
-    -- Fallback: bottom-right area (typical mobile sprint zone)
-    local cam = Workspace.CurrentCamera
-    local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
-    for _, t in ipairs(touches) do
-        if t.Position.X > vp.X * 0.65 and t.Position.Y > vp.Y * 0.55 then
-            return true
-        end
-    end
-    return false
+end
+
+local function findMobileSprintButton()
+    if MobileSprintButton and MobileSprintButton.Parent then return end
+    MobileSprintButton = nil
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    if pg then scanForSprintButtonIn(pg) end
+    if MobileSprintButton and MobileSprintButton.Parent then return end
+    pcall(function()
+        local cg = game:GetService("CoreGui")
+        scanForSprintButtonIn(cg)
+    end)
 end
 
 task.spawn(function()
     while true do
-        task.wait(2)
-        if UserInputService.TouchEnabled then
-            pcall(findMobileSprintButton)
+        task.wait(3)
+        if MobileSprintButton and MobileSprintButton.Parent then
+            -- sudah ketemu
+        else
+            if UserInputService.TouchEnabled then
+                pcall(findMobileSprintButton)
+            end
         end
     end
 end)
 
 task.spawn(function()
     local pg = LocalPlayer:WaitForChild("PlayerGui", 30)
-    if not pg then return end
-    pg.DescendantAdded:Connect(function(d)
-        if d:IsA("GuiButton") then
+    if pg then
+        pg.DescendantAdded:Connect(function(d)
+            if MobileSprintButton and MobileSprintButton.Parent then return end
             task.wait(0.1)
-            if nameMatchesSprint(d.Name) then
-                MobileSprintButton = d
-                if not MobileSprintDebugPrinted then
-                    MobileSprintDebugPrinted = true
-                    print("[SysHub][Stamina] Sprint button (late): " .. d:GetFullName())
-                end
-            end
-        end
+            tryHookCandidate(d)
+        end)
+    end
+end)
+
+task.spawn(function()
+    pcall(function()
+        local cg = game:GetService("CoreGui")
+        cg.DescendantAdded:Connect(function(d)
+            if MobileSprintButton and MobileSprintButton.Parent then return end
+            task.wait(0.1)
+            tryHookCandidate(d)
+        end)
     end)
 end)
 
-RunService.Heartbeat:Connect(function()
-    if not infiniteStaminaEnabled then
-        return
-    end
-    -- Refill stamina unconditionally (like v6.9.37 — works on all platforms)
-    forceStamina()
-
-    local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
-    if not hum then
-        return
-    end
-
-    -- Detect sprint: PC keyboard OR Mobile sprint button touch
-    local sprinting = false
+-- ============================================================
+-- Sprint state check
+-- ============================================================
+local function isSprintActive()
     if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then
-        sprinting = true
-    elseif UserInputService.TouchEnabled and isMobileSprintTouched() then
-        sprinting = true
+        return true
+    end
+    if UserInputService.TouchEnabled and MobileSprintButton and MobileSprintButton.Parent then
+        local ok, touches = pcall(function() return UserInputService:GetTouches() end)
+        if ok and touches and #touches > 0 then
+            local bp = MobileSprintButton.AbsolutePosition
+            local bs = MobileSprintButton.AbsoluteSize
+            local pad = 30
+            for _, t in ipairs(touches) do
+                local px, py = t.Position.X, t.Position.Y
+                if px >= bp.X - pad and px <= bp.X + bs.X + pad
+                   and py >= bp.Y - pad and py <= bp.Y + bs.Y + pad then
+                    return true
+                end
+            end
+        end
+    end
+    if UserInputService.TouchEnabled and (not MobileSprintButton or not MobileSprintButton.Parent) then
+        local ok, touches = pcall(function() return UserInputService:GetTouches() end)
+        if ok and touches and #touches > 0 then
+            local cam = Workspace.CurrentCamera
+            local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
+            for _, t in ipairs(touches) do
+                if t.Position.X > vp.X * 0.65 and t.Position.Y > vp.Y * 0.55 then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+-- ============================================================
+-- v6.9.46: SINGLE stepped handler — stamina + walkspeed, no stuck
+-- ============================================================
+RunService.Stepped:Connect(function()
+    if not infiniteStaminaEnabled and not customWalkSpeedEnabled then
+        return
     end
 
-    if sprinting then
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+
+    local sprinting = false
+    if infiniteStaminaEnabled then
+        sprinting = isSprintActive()
+    end
+
+    if infiniteStaminaEnabled and sprinting then
+        -- Sprint boost active → refill + boost WS
+        forceStamina()
         local sprintWS = capturedSprintSpeed or (originalWalkSpeed and originalWalkSpeed * 1.5) or 19
         if customWalkSpeedEnabled and targetWalkSpeed > sprintWS then
             sprintWS = targetWalkSpeed
@@ -2161,13 +2184,23 @@ RunService.Heartbeat:Connect(function()
         if hum.WalkSpeed < sprintWS - 0.5 then
             hum.WalkSpeed = sprintWS
         end
+    elseif customWalkSpeedEnabled then
+        -- Custom ON, tidak sprint (atau infinite OFF) → enforce target
+        if hum.WalkSpeed ~= targetWalkSpeed then
+            hum.WalkSpeed = targetWalkSpeed
+        end
+    elseif infiniteStaminaEnabled and not sprinting then
+        -- v6.9.46: Infinite ON, custom OFF, tidak sprint → RESET ke original
+        -- Ini fix "nyangkut" ketika custom di-toggle OFF saat sprint
+        if originalWalkSpeed and hum.WalkSpeed > originalWalkSpeed + 0.5 then
+            hum.WalkSpeed = originalWalkSpeed
+        end
     end
-    -- No reset needed — game resets WalkSpeed when sprint released
 end)
 
 task.spawn(function()
     while true do
-        task.wait(0.15)
+        task.wait(0.2)
         local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
         if hum and originalWalkSpeed then
             local ws = hum.WalkSpeed
@@ -2202,6 +2235,8 @@ local function attachWalkSpeed(char)
                 capturedSprintSpeed = ws
             end
         end
+        -- v6.9.46: enforcement hanya kalau custom ON DAN infinite OFF
+        -- (biar tidak konflik dengan sprint boost dari infinite)
         if customWalkSpeedEnabled and not infiniteStaminaEnabled and hum.WalkSpeed ~= targetWalkSpeed then
             hum.WalkSpeed = targetWalkSpeed
         end
@@ -2215,33 +2250,6 @@ end
 LocalPlayer.CharacterAdded:Connect(function(c)
     task.wait(0.3)
     attachWalkSpeed(c)
-end)
-
--- ============================================================
--- WalkSpeed Continuous Enforcement
--- ============================================================
-RunService.RenderStepped:Connect(function()
-    if not customWalkSpeedEnabled then
-        return
-    end
-    local char = LocalPlayer.Character
-    if not char then
-        return
-    end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hum then
-        return
-    end
-    if infiniteStaminaEnabled then
-        local sprinting = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)
-            or UserInputService:IsKeyDown(Enum.KeyCode.RightShift)
-        if sprinting then
-            return
-        end
-    end
-    if hum.WalkSpeed ~= targetWalkSpeed then
-        hum.WalkSpeed = targetWalkSpeed
-    end
 end)
 
 local NoclipConn, CachedParts, CacheTick = nil, {}, 0
@@ -3041,6 +3049,16 @@ SecMove:Toggle({
             StaminaDebugPrinted = false
             pcall(scanStaminaAll)
             pcall(forceStamina)
+            if UserInputService.TouchEnabled then
+                pcall(findMobileSprintButton)
+            end
+        else
+            -- v6.9.46: reset WS saat toggle OFF (fix stuck)
+            local char = LocalPlayer.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hum and originalWalkSpeed then
+                hum.WalkSpeed = originalWalkSpeed
+            end
         end
     end;
 })
@@ -3171,7 +3189,6 @@ task.spawn(function()
             LastStaminaScan = 0
             StaminaDebugPrinted = false
             MobileSprintDebugPrinted = false
-            lastHuntNotify = 0
             statusUpdateFailures = 0
             for tag in pairs(espTrackers) do
                 clearESP(tag)
@@ -3183,5 +3200,5 @@ task.spawn(function()
 end)
 
 refreshAutoStatusUI(true)
-safeNotify({Title = "SysHub v6.9.41", Content = "Blair Assistant siap!", Duration = 5})
-print("[SysHub v6.9.41] Loaded")
+safeNotify({Title = "SysHub", Content = "Blair Assistant siap!", Duration = 5})
+print("[SysHub v6.9.46] Loaded")
